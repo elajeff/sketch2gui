@@ -1,0 +1,4 @@
+# Optional alternative OCR engine. Model weights download on first use and are large.
+torch>=2.2
+transformers>=4.44,<5
+safetensors>=0.4

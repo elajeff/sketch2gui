@@ -1,0 +1,2 @@
+# Optional Windows folder packaging tool; kept separate from runtime dependencies.
+pyinstaller>=6.11,<7

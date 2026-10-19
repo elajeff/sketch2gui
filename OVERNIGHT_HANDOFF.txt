@@ -1,0 +1,55 @@
+Sketch2GUI Overnight Handoff
+Date: 2026-10-19
+Project folder: <local project folder>
+
+This note summarizes the overnight work for a follow-up ChatGPT session. The detailed report is OVERNIGHT_BUILD_REPORT.md. Read AGENTS.md, PROJECT_STATUS.md, OCR_DECISION.md, and AUTONOMOUS_BUILD_PLAN.md before making further project changes.
+
+COMPLETED WORK
+- Audited the project and its current instructions, plan, dependencies, tests, app, docs, and benchmark folders.
+- Kept the agreed optional OCR choice: PaddleOCR PP-OCRv5 mobile English (en_PP-OCRv5_mobile_rec) with the implemented binary text-line preprocessing. Geometry-only operation remains available without Paddle.
+- Preserved raw benchmark exact match separately from normalized exact match; improved malformed project validation; made saves atomic; protected existing OCR sample/truth files against overwrite; added undoable deletion and aspect-preserving canvas behavior.
+- Added Qt/OCR regression tests covering drawing, selection/deselection, interpretation, correction, review navigation, preview/code updates, undo/redo, save/open/export, malformed data, sample overwrite protection, OCR failures/empty/punctuation, missing optional dependencies, and Paddle-default selection when available.
+- Added optional PyInstaller build tooling, revised the Windows build script to rely on normal PyInstaller PySide6 hooks instead of collecting every Qt module, updated README and status docs, and ignored generated build variants/spec files.
+- Created OVERNIGHT_BUILD_REPORT.md with fuller results and limitations.
+
+VERIFIED COMMANDS AND RESULTS
+Full tests (workspace-local temp paths and offscreen Qt):
+$env:TEMP=(Get-Location).Path
+$env:TMP=(Get-Location).Path
+$env:QT_QPA_PLATFORM='offscreen'
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+Result: Ran 65 tests in 0.149s; OK.
+
+Compile check:
+.\.venv\Scripts\python.exe -m compileall -q sketch2gui tests launch_sketch2gui.py benchmark_ocr.py compare_ocr_results.py compare_ocr_variants.py prepare_ocr_samples.py prepare_ocr_variants.py
+Result: exit code 0.
+
+PyInstaller dependency:
+.\.venv\Scripts\python.exe -m pip install -r requirements-build.txt
+Result: installed PyInstaller 6.22.3.
+
+The original broad build via .\build_windows.bat succeeded but collected all PySide6 modules: dist\Sketch2GUI contained 3,962 files / 684.8 MiB. It was preserved.
+
+A narrower build succeeded to separate paths:
+.\.venv\Scripts\python.exe -m PyInstaller --windowed --name Sketch2GUI --distpath dist_lean --workpath build_lean launch_sketch2gui.py
+Result: exit code 0; dist_lean\Sketch2GUI contains 219 files / 128.3 MiB; executable is 2.64 MiB. The executable started visibly on Windows with title Sketch2GUI and closed cleanly. The updated build_windows.bat uses the same narrower PyInstaller configuration with default build/dist paths; it was not rerun on top of the preserved earlier broad output.
+
+A separate offscreen packaged launch did not expose a closable Windows window handle and is not counted as a successful smoke test. The visible Windows startup/close above did pass. Offscreen app workflow tests and an offscreen generated-widget execution check passed.
+
+HISTORICAL OCR — NOT RERUN
+- 19 mouse-written labeled crops, from two drawings. Original crops and raw CSV/JSON reports were not recovered. The benchmark folder contained only its README. Do not claim these numbers were recreated or rerun; do not invent samples or metrics.
+- Paddle original crops: 5.3% exact match (1/19), mean CER 0.378, median 21.9 ms.
+- Paddle tight crop + padding: 21.1% (4/19), CER 0.351, median 14.1 ms.
+- Paddle binary preprocessing (selected): 21.1% (4/19), CER 0.351, median 13.1 ms.
+- Paddle thicker ink: 15.8% (3/19), CER 0.379, median 13.9 ms.
+- TrOCR Base Handwritten: 5.3% (1/19), CER 0.906, median 869.2 ms.
+- PaddlePaddle, PaddleOCR and model weights are not installed in this environment; no actual inference was run. OCR remains optional and requires user correction.
+
+LIMITATIONS / MANUAL FOLLOW-UP
+- A visible manual interaction pass is still useful: draw, interpret, correct type/text, test undo/redo, save/reopen, export and run generated Python. Individual behaviors passed offscreen tests, but the full flow was not manually performed in a visible session.
+- To try OCR, install the optional Paddle packages in a compatible environment and evaluate genuinely collected and labeled samples. Do not treat the unavailable historical samples as recoverable.
+- Geometry recognition remains heuristic, generated layouts use absolute coordinates, and OCR was inaccurate on the small historical set.
+- The folder has no .git metadata, so Git status/diff is unavailable. No commit, push, publication, upload, or release occurred. No user drawings or benchmark data were present or modified.
+
+FILES CHANGED
+.gitignore, benchmark_ocr.py, tests/test_benchmark.py, sketch2gui/models.py, tests/test_models.py, sketch2gui/ui/main_window.py, sketch2gui/ui/canvas.py, tests/test_ui.py, tests/test_ocr_backend.py, tests/test_paddle_preprocessing.py, tests/test_geometry.py, README.md, PROJECT_STATUS.md, requirements-build.txt, build_windows.bat, launch_sketch2gui.py, OVERNIGHT_BUILD_REPORT.md, and this OVERNIGHT_HANDOFF.txt.

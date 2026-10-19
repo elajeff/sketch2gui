@@ -1,0 +1,7 @@
+Read AGENTS.md, PROJECT_STATUS.md, OCR_DECISION.md, and AUTONOMOUS_BUILD_PLAN.md. Treat AUTONOMOUS_BUILD_PLAN.md as the end-to-end product contract, not as a one-step task.
+
+The OCR choice is already made for now: use PaddleOCR PP-OCRv5 mobile English with the implemented binary text-line preprocessing in OCR_DECISION.md. The historical 19-sample metrics are preliminary, and the original sample files/results were not recovered; do not claim they were rerun and do not block the product build trying to recreate them.
+
+Inspect the actual repository and user data first. Then continue independently through all phases in order until the definition of done is met. Do not stop after OCR analysis. Don't ask routine questions; choose sensible, conservative defaults, document decisions, and run tests after changes. If Paddle dependencies are installed, it should be the default; otherwise start in geometry-only mode with an understandable path to enabling OCR.
+
+Preserve all existing user drawings, labeled samples, baseline results, and uncommitted work if present. No destructive cleanup, commit, push, release, upload, or external publication. Do not fabricate metrics or test results. Before finishing, audit the diff and provide a factual report with changes, exact test/build commands and outputs, historical OCR metrics and sample count, limitations, and any blocked criteria.

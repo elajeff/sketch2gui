@@ -1,0 +1,17 @@
+.venv/
+.venv-*/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+benchmark/results*/
+build/
+dist/
+build_*/
+dist_*/
+Sketch2GUI.spec
+benchmark/samples/*.png
+benchmark/samples/*.jpg
+benchmark/samples/*.jpeg
+benchmark/samples/*.txt
+*.tmp
+.DS_Store
