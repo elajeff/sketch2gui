@@ -5,7 +5,11 @@ import unittest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtGui import QColor, QImage
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QEvent
+from PySide6.QtWidgets import (
+    QApplication, QPushButton, QLineEdit, QLabel, QCheckBox, QComboBox,
+    QTableWidget, QRadioButton, QFrame, QWidget,
+)
 
 from sketch2gui.codegen import generate_python
 from sketch2gui.models import DesignDocument, Stroke, UIElement
@@ -59,6 +63,75 @@ class CodeGenerationTests(unittest.TestCase):
         finally:
             window.close()
             window.deleteLater()
+            app.processEvents()
+
+    def test_generated_mixed_gui_instantiates_widgets_and_renders_strokes(self):
+        app = QApplication.instance() or QApplication([])
+        document = DesignDocument(
+            width=800,
+            height=600,
+            strokes=[Stroke([(20, 25), (40, 25), (60, 25)], width=4)],
+            elements=[
+                UIElement("button", 100, 80, 120, 36, text="Submit"),
+                UIElement("text_field", 100, 130, 180, 32, text="Ada", placeholder="Name"),
+                UIElement("search_field", 100, 175, 180, 32, placeholder="Search"),
+                UIElement("label", 100, 220, 100, 25, text="Title"),
+                UIElement("checkbox", 100, 260, 120, 28, text="Agree"),
+                UIElement("dropdown", 230, 80, 130, 35),
+                UIElement("radio_button", 230, 130, 120, 28, text="Option"),
+                UIElement("table", 400, 40, 250, 120, table_rows=2,
+                          table_columns=2, table_cells=[["Name", "Room"], ["Ada", "Lab"]]),
+                UIElement("chart", 400, 190, 200, 120, chart_values=[2, 8, 4]),
+                UIElement("ellipse", 650, 190, 80, 60),
+                UIElement("panel", 350, 350, 180, 100),
+                UIElement("line", 100, 330, 150, 8),
+                UIElement("line", 300, 300, 8, 90),
+            ],
+        )
+        source = generate_python(document)
+        ast.parse(source)
+        namespace = {"__name__": "generated_mixed_gui_test"}
+        exec(compile(source, "<generated-mixed-gui>", "exec"), namespace)
+        window = namespace["GeneratedWindow"]()
+
+        try:
+            window.show()
+            app.processEvents()
+            self.assertEqual(window.findChildren(QPushButton)[0].text(), "Submit")
+            self.assertTrue(any(
+                widget.text() == "Ada" and widget.placeholderText() == "Name"
+                for widget in window.findChildren(QLineEdit)
+            ))
+            self.assertTrue(any(widget.text() == "Title" for widget in window.findChildren(QLabel)))
+            self.assertTrue(any(widget.text() == "Agree" for widget in window.findChildren(QCheckBox)))
+            self.assertEqual(window.findChildren(QComboBox)[0].count(), 3)
+            self.assertTrue(any(widget.text() == "Option" for widget in window.findChildren(QRadioButton)))
+
+            table = window.findChild(QTableWidget)
+            self.assertIsNotNone(table)
+            self.assertEqual((table.rowCount(), table.columnCount()), (2, 2))
+            self.assertEqual(table.item(1, 0).text(), "Ada")
+            chart = next(widget for widget in window.findChildren(QWidget)
+                         if type(widget).__name__ == "ChartWidget")
+            ellipse = next(widget for widget in window.findChildren(QWidget)
+                           if type(widget).__name__ == "EllipseWidget")
+            self.assertEqual(chart.values, [2.0, 8.0, 4.0])
+            self.assertGreater(ellipse.width(), 0)
+            line_shapes = {
+                widget.frameShape() for widget in window.findChildren(QFrame)
+                if widget.frameShape() in (QFrame.Shape.HLine, QFrame.Shape.VLine)
+            }
+            self.assertEqual(line_shapes, {QFrame.Shape.HLine, QFrame.Shape.VLine})
+
+            image = QImage(window.size(), QImage.Format.Format_ARGB32)
+            image.fill(QColor("white"))
+            window.render(image)
+            self.assertNotEqual(image.pixelColor(40, 25), QColor("white"))
+            self.assertEqual(image.pixelColor(760, 550), QColor("white"))
+        finally:
+            window.close()
+            window.deleteLater()
+            app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
             app.processEvents()
 
     def test_chart_and_ellipse_generate_valid_source(self):

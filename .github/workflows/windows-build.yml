@@ -21,6 +21,10 @@ jobs:
         with:
           python-version: "3.13"
           architecture: x64
+      - name: Create project virtual environment
+        shell: pwsh
+        run: python -m venv .venv
+
       - name: Test and build using the documented Windows script
         shell: cmd
         run: build_windows.bat

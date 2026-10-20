@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QEvent, QPoint, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLineEdit, QPushButton
+from PySide6.QtWidgets import QApplication, QLineEdit, QPushButton, QTableWidget
 
 from sketch2gui.models import Stroke, UIElement
 from sketch2gui.ui.main_window import MainWindow
@@ -305,6 +305,109 @@ class MainWindowEditingTests(unittest.TestCase):
         self.assertTrue(self.window.document.elements[0].confirmed)
         self.assertIn("Button", self.window.code_editor.toPlainText())
         self.assertIsInstance(self.window.preview._widgets[0], QPushButton)
+
+    def test_shape_tool_uses_release_position_without_intermediate_mouse_move(self):
+        self.window.document.elements = []
+        self.window._refresh_all()
+        self.window.resize(1280, 800)
+        self.window.show()
+        self.app.processEvents()
+        self.window.drawing_tool_combo.setCurrentIndex(
+            self.window.drawing_tool_combo.findData("button")
+        )
+        canvas = self.window.canvas
+        scale_x, scale_y, offset_x, offset_y = canvas._canvas_transform()
+        start = QPoint(round(offset_x + 40 * scale_x), round(offset_y + 50 * scale_y))
+        end = QPoint(round(offset_x + 180 * scale_x), round(offset_y + 95 * scale_y))
+        QTest.mousePress(canvas, Qt.MouseButton.LeftButton, pos=start)
+        QTest.mouseRelease(canvas, Qt.MouseButton.LeftButton, pos=end)
+        self.app.processEvents()
+
+        self.assertEqual(len(self.window.document.elements), 1)
+        element = self.window.document.elements[0]
+        self.assertEqual(element.element_type, "button")
+        self.assertGreater(element.width, 100)
+        self.assertGreater(element.height, 30)
+        self.assertIn("QPushButton('Button'", self.window.code_editor.toPlainText())
+
+    def test_component_move_uses_release_position_without_intermediate_mouse_move(self):
+        self.window.resize(1280, 800)
+        self.window.show()
+        self.app.processEvents()
+        self.window.drawing_tool_combo.setCurrentIndex(
+            self.window.drawing_tool_combo.findData("select")
+        )
+        canvas = self.window.canvas
+        sx, sy, ox, oy = canvas._canvas_transform()
+        start = QPoint(round(80 * sx + ox), round(70 * sy + oy))
+        end = QPoint(round(130 * sx + ox), round(100 * sy + oy))
+        old_x, old_y = self.element.x, self.element.y
+        QTest.mousePress(canvas, Qt.MouseButton.LeftButton, pos=start)
+        QTest.mouseRelease(canvas, Qt.MouseButton.LeftButton, pos=end)
+        self.app.processEvents()
+
+        self.assertGreater(self.element.x, old_x)
+        self.assertGreater(self.element.y, old_y)
+
+    def test_component_resize_uses_release_position_without_intermediate_mouse_move(self):
+        self.window.resize(1280, 800)
+        self.window.show()
+        self.app.processEvents()
+        self.window.drawing_tool_combo.setCurrentIndex(
+            self.window.drawing_tool_combo.findData("select")
+        )
+        canvas = self.window.canvas
+        sx, sy, ox, oy = canvas._canvas_transform()
+        start = QPoint(round((self.element.x + self.element.width) * sx + ox),
+                       round((self.element.y + self.element.height) * sy + oy))
+        end = QPoint(round(240 * sx + ox), round(150 * sy + oy))
+        old_width, old_height = self.element.width, self.element.height
+        QTest.mousePress(canvas, Qt.MouseButton.LeftButton, pos=start)
+        QTest.mouseRelease(canvas, Qt.MouseButton.LeftButton, pos=end)
+        self.app.processEvents()
+
+        self.assertGreater(self.element.width, old_width)
+        self.assertGreater(self.element.height, old_height)
+
+    def test_line_tool_creates_horizontal_and_vertical_components(self):
+        self.window.document.elements = []
+        self.window._refresh_all()
+        self.window.resize(1280, 800)
+        self.window.show()
+        self.app.processEvents()
+        self.window.drawing_tool_combo.setCurrentIndex(
+            self.window.drawing_tool_combo.findData("line")
+        )
+        canvas = self.window.canvas
+        sx, sy, ox, oy = canvas._canvas_transform()
+        to_canvas = lambda x, y: QPoint(round(x * sx + ox), round(y * sy + oy))
+
+        for start_point, end_point in (((40, 50), (160, 50)), ((220, 60), (220, 180))):
+            QTest.mousePress(canvas, Qt.MouseButton.LeftButton, pos=to_canvas(*start_point))
+            QTest.mouseRelease(canvas, Qt.MouseButton.LeftButton, pos=to_canvas(*end_point))
+        self.app.processEvents()
+
+        lines = self.window.document.elements
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(all(element.element_type == "line" for element in lines))
+        self.assertGreater(lines[0].width, lines[0].height)
+        self.assertGreater(lines[1].height, lines[1].width)
+        source = self.window.code_editor.toPlainText()
+        self.assertIn("QFrame.Shape.HLine", source)
+        self.assertIn("QFrame.Shape.VLine", source)
+
+    def test_converting_component_to_table_keeps_cell_edits_safe(self):
+        self.window.select_element(self.element.element_id)
+        self.window.change_element_property("element_type", "table")
+        table = self.window.document.elements[0]
+        self.assertEqual(table.element_type, "table")
+        self.assertEqual(len(table.table_cells), table.table_rows)
+        self.assertEqual(len(table.table_cells[0]), table.table_columns)
+        self.assertIsInstance(self.window.preview._widgets[0], QTableWidget)
+
+        self.window.update_table_cell(table.element_id, 0, 0, "Name")
+        self.assertEqual(table.table_cells[0][0], "Name")
+        self.assertIn("QTableWidgetItem('Name')", self.window.code_editor.toPlainText())
 
     def test_inline_text_field_edit_updates_model_preview_and_code(self):
         field = UIElement("text_field", 30, 40, 180, 38, placeholder="Enter text...")

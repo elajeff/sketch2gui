@@ -173,6 +173,7 @@ class MainWindow(QMainWindow):
             ("Table", "table"),
             ("Chart", "chart"),
             ("Ellipse", "ellipse"),
+            ("Line", "line"),
         ):
             self.drawing_tool_combo.addItem(label, key)
         self.drawing_tool_combo.setToolTip("Freehand preserves your drawing. Choose a component tool, then drag on the canvas to create a clean component directly.")

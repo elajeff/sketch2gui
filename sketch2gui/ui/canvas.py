@@ -20,6 +20,7 @@ DRAW_TOOL_NAMES = {
     "table": "Table",
     "chart": "Chart",
     "ellipse": "Ellipse",
+    "line": "Line",
 }
 
 
@@ -185,6 +186,41 @@ class DrawingCanvas(QWidget):
         self._dragged = False
         self.update()
 
+    def _update_component_drag(self, point: tuple[float, float]) -> None:
+        """Apply a drag position once, including the final mouse-release position."""
+        if not (
+            self._component_drag_id
+            and self._component_drag_start
+            and self._component_drag_bounds
+            and self._component_drag_mode
+        ):
+            return
+
+        sx, sy = self._component_drag_start
+        x, y, w, h = self._component_drag_bounds
+        dx, dy = point[0] - sx, point[1] - sy
+        mode = self._component_drag_mode
+        if mode == "move":
+            bounds = (x + dx, y + dy, w, h)
+        else:
+            left, top, right, bottom = x, y, x + w, y + h
+            resize_left = mode in ("resize-tl", "resize-bl")
+            resize_right = mode in ("resize-tr", "resize-br")
+            resize_top = mode in ("resize-tl", "resize-tr")
+            resize_bottom = mode in ("resize-bl", "resize-br")
+            if resize_left:
+                left = min(x + dx, right - 8)
+            if resize_right:
+                right = max(x + w + dx, left + 8)
+            if resize_top:
+                top = min(y + dy, bottom - 8)
+            if resize_bottom:
+                bottom = max(y + h + dy, top + 8)
+            bounds = (left, top, right - left, bottom - top)
+        self._component_drag_current = bounds
+        self._component_dragged = self._component_dragged or math.hypot(dx, dy) >= 2
+        self.update()
+
     def mouseMoveEvent(self, event):
         interaction_active = (
             self._component_drag_id is not None
@@ -195,30 +231,7 @@ class DrawingCanvas(QWidget):
             pos = event.position()
             point = self._widget_to_document(pos, clamp=True)
             if self._component_drag_id and self._component_drag_start and self._component_drag_bounds and self._component_drag_mode:
-                sx, sy = self._component_drag_start
-                x, y, w, h = self._component_drag_bounds
-                dx, dy = point[0]-sx, point[1]-sy
-                mode = self._component_drag_mode
-                if mode == "move":
-                    bounds = (x+dx, y+dy, w, h)
-                else:
-                    left, top, right, bottom = x, y, x+w, y+h
-                    resize_left = mode in ("resize-tl", "resize-bl")
-                    resize_right = mode in ("resize-tr", "resize-br")
-                    resize_top = mode in ("resize-tl", "resize-tr")
-                    resize_bottom = mode in ("resize-bl", "resize-br")
-                    if resize_left:
-                        left = min(x+dx, right-8)
-                    if resize_right:
-                        right = max(x+w+dx, left+8)
-                    if resize_top:
-                        top = min(y+dy, bottom-8)
-                    if resize_bottom:
-                        bottom = max(y+h+dy, top+8)
-                    bounds = (left, top, right-left, bottom-top)
-                self._component_drag_current = bounds
-                self._component_dragged = self._component_dragged or math.hypot(dx, dy) >= 2
-                self.update()
+                self._update_component_drag(point)
                 return super().mouseMoveEvent(event)
             if self._shape_start is not None and self._drag_tool:
                 self._shape_end = point
@@ -233,6 +246,14 @@ class DrawingCanvas(QWidget):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        # Mouse release can be the only event carrying the final drag position.
+        if event.button() == Qt.MouseButton.LeftButton and self.drawing_enabled:
+            release_position = self._widget_to_document(event.position(), clamp=True)
+            if self._component_drag_id:
+                self._update_component_drag(release_position)
+            if self._shape_start is not None and self._drag_tool:
+                self._shape_end = release_position
+
         # Qt may deliver a release at a new position without an intermediate move event.
         if (
             event.button() == Qt.MouseButton.LeftButton
@@ -286,6 +307,22 @@ class DrawingCanvas(QWidget):
                 end = (self._snap_value(end[0]), self._snap_value(end[1]))
             x, y = min(start[0], end[0]), min(start[1], end[1])
             width, height = abs(end[0] - start[0]), abs(end[1] - start[1])
+            if tool == "line":
+                dx, dy = end[0] - start[0], end[1] - start[1]
+                if math.hypot(dx, dy) >= 18:
+                    if abs(dx) >= abs(dy):
+                        line_x, line_y = min(start[0], end[0]), (start[1] + end[1]) / 2
+                        line_width, line_height = max(8.0, abs(dx)), 8.0
+                    else:
+                        line_x, line_y = (start[0] + end[0]) / 2, min(start[1], end[1])
+                        line_width, line_height = 8.0, max(8.0, abs(dy))
+                    self.element_added.emit(UIElement(
+                        "line", line_x, line_y, line_width, line_height,
+                        confidence=1.0, confirmed=True, user_modified=True,
+                    ))
+                self.update()
+                return super().mouseReleaseEvent(event)
+
             min_width, min_height = (50, 40) if tool in ("table", "chart") else (18, 16)
             if width >= min_width and height >= min_height:
                 defaults = {
@@ -396,7 +433,10 @@ class DrawingCanvas(QWidget):
                 painter.setPen(QColor("#202938"))
                 painter.drawText(int(x), int(y), int(w), int(h), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, element.text or "Label")
             elif element.element_type == "line":
-                painter.drawLine(int(x), int(y+h/2), int(x+w), int(y+h/2))
+                if h > w:
+                    painter.drawLine(int(x+w/2), int(y), int(x+w/2), int(y+h))
+                else:
+                    painter.drawLine(int(x), int(y+h/2), int(x+w), int(y+h/2))
         if self._component_drag_current is not None:
             x, y, width, height = self._component_drag_current
             painter.setPen(QPen(QColor("#2563EB"), 2, Qt.PenStyle.DashLine))
@@ -434,5 +474,6 @@ class DrawingCanvas(QWidget):
             "table": "Drag to place a table",
             "chart": "Drag to place a chart",
             "ellipse": "Drag to place an ellipse",
+            "line": "Drag to place a horizontal or vertical line",
         }
         painter.drawText(10, self.height() - 10, hints.get(self.active_tool, "Draw on the canvas"))

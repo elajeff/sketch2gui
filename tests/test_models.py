@@ -28,6 +28,33 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(loaded.elements[0].placeholder, "Search...")
         self.assertTrue(loaded.elements[0].needs_review)
 
+    def test_changing_component_type_initializes_table_cells(self):
+        element = UIElement("panel", 10, 20, 180, 90)
+        element.set_type("table")
+        self.assertEqual(element.table_cells, [["", "", ""], ["", "", ""], ["", "", ""]])
+        element.table_cells[0][0] = "Name"
+        element.set_type("button")
+        self.assertEqual(element.table_cells, [])
+        element.set_type("table")
+        self.assertEqual(element.table_cells[0][0], "")
+
+    def test_loaded_component_bounds_are_kept_inside_canvas(self):
+        project = DesignDocument(width=200, height=240, elements=[
+            UIElement("button", 10, 10, 80, 30)
+        ]).to_dict()
+        project["elements"][0]["bounds"] = {
+            "x": -500, "y": 1_000_000_000, "width": 9000, "height": 8000
+        }
+        loaded = DesignDocument.from_dict(project)
+        element = loaded.elements[0]
+        self.assertEqual((element.x, element.y, element.width, element.height),
+                         (0.0, 0.0, 200.0, 240.0))
+
+    def test_project_rejects_stroke_points_outside_canvas(self):
+        project = DesignDocument(strokes=[Stroke([(-1, 2), (3, 4)])]).to_dict()
+        with self.assertRaisesRegex(ValueError, "within canvas bounds"):
+            DesignDocument.from_dict(project)
+
     def test_user_correction_is_persisted_and_clears_warning(self):
         element = UIElement("table", 0, 0, 200, 45, confidence=0.4, alternatives=["search_field"])
         element.set_type("search_field")

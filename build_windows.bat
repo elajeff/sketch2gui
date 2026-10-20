@@ -12,7 +12,7 @@ if not exist "%PYTHON%" (
 )
 if not exist "%ICON%" (
   echo ERROR: Application icon is missing: "%ICON%".
-  echo Restore the application icon at assetspp_icon.ico before building.
+  echo Restore the application icon at assets\app_icon.ico before building.
   exit /b 1
 )
 

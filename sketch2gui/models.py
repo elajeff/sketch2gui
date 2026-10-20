@@ -146,6 +146,14 @@ class UIElement:
     def set_type(self, element_type: str, *, user_confirmed: bool = True) -> None:
         if element_type not in SUPPORTED_ELEMENT_TYPES:
             raise ValueError(f"Unsupported component type: {element_type}")
+        previous_type = self.element_type
+        if element_type == "table" and previous_type != "table":
+            self.table_cells = [
+                ["" for _ in range(self.table_columns)]
+                for _ in range(self.table_rows)
+            ]
+        elif previous_type == "table" and element_type != "table":
+            self.table_cells = []
         self.element_type = element_type
         if not self.placeholder and element_type == "search_field":
             self.placeholder = self.text or "Search..."
@@ -297,8 +305,25 @@ class DesignDocument:
             height = max(200, min(3000, int(canvas.get("height", 600))))
         except (TypeError, ValueError, OverflowError) as exc:
             raise ValueError("Project canvas dimensions must be integers between 200 and 3000") from exc
+        strokes = [Stroke.from_dict(stroke) for stroke in strokes_data]
+        for stroke in strokes:
+            if any(
+                x < 0 or y < 0 or x > width or y > height
+                for x, y in stroke.points
+            ):
+                raise ValueError("Project stroke coordinates must lie within canvas bounds")
+
+        elements = [UIElement.from_dict(element) for element in elements_data]
+        # A finite number can still be far outside the canvas. Normalize saved
+        # bounds before the UI turns them into native Qt widget geometries.
+        for element in elements:
+            element.width = min(element.width, float(width))
+            element.height = min(element.height, float(height))
+            element.x = min(max(0.0, element.x), float(width) - element.width)
+            element.y = min(max(0.0, element.y), float(height) - element.height)
+
         return cls(
             width=width, height=height, name=str(data.get("name", "Untitled sketch")),
-            strokes=[Stroke.from_dict(s) for s in strokes_data],
-            elements=[UIElement.from_dict(e) for e in elements_data],
+            strokes=strokes,
+            elements=elements,
         )
