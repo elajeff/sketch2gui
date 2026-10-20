@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import math
 import os
 import tempfile
 import time
@@ -10,16 +11,17 @@ import traceback
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QObject, QRunnable, QThreadPool, Signal
-from PySide6.QtGui import QAction, QKeySequence, QFont
+from PySide6.QtGui import QAction, QKeySequence, QFont, QTextCursor
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox,
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox, QCheckBox,
     QSplitter, QPlainTextEdit, QScrollArea, QFileDialog, QMessageBox, QInputDialog,
     QFrame,
 )
 
+from ..app_icon import load_app_icon
 from ..codegen import generate_python
 from ..geometry import recognize_sketch
-from ..models import DesignDocument, UIElement, Stroke, preserve_manual_edits
+from ..models import DesignDocument, UIElement, Stroke, preserve_manual_edits, new_id, SUPPORTED_ELEMENT_TYPES
 from ..ocr import load_backend
 from ..sample_images import render_strokes
 from .canvas import DrawingCanvas
@@ -27,20 +29,44 @@ from .preview import PreviewSurface
 from .properties import PropertiesPanel
 
 
+def _atomic_write_text(target: Path, contents: str) -> None:
+    """Write text beside its destination, then replace it only after a full write."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=target.parent,
+            prefix=f".{target.name}.", suffix=".tmp", delete=False,
+        ) as temporary_file:
+            temporary_path = Path(temporary_file.name)
+            temporary_file.write(contents)
+        os.replace(temporary_path, target)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+
 class WorkerSignals(QObject):
     finished = Signal(object, object)  # result, error string or None
 
 
+def _optional_modules_available(*module_names: str) -> bool:
+    """Return whether every optional dependency is discoverable without importing it."""
+    try:
+        return all(importlib.util.find_spec(name) is not None for name in module_names)
+    except (ImportError, ValueError):
+        return False
+
+
 def _paddle_dependencies_available() -> bool:
     """Avoid selecting Paddle by default when its optional dependencies are missing."""
-    for module_name in ("paddle", "paddleocr"):
-        try:
-            if importlib.util.find_spec(module_name) is None:
-                return False
-        except (ImportError, ModuleNotFoundError, ValueError):
-            return False
-    return True
+    return _optional_modules_available("paddle", "paddleocr")
 
+
+def _trocr_dependencies_available() -> bool:
+    """Expose the experimental TrOCR option only when its optional packages exist."""
+    return _optional_modules_available("torch", "transformers")
 
 class InterpretWorker(QRunnable):
     def __init__(self, document: DesignDocument, engine_name: str):
@@ -64,22 +90,22 @@ class InterpretWorker(QRunnable):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.setWindowIcon(load_app_icon())
         self.setWindowTitle("Sketch2GUI")
         self.resize(1540, 930)
         self.setMinimumSize(1120, 720)
         self.document = DesignDocument()
         self.selected_id: str | None = None
+        self.selected_ids: set[str] = set()
         self._undo_stack: list[str] = []
         self._redo_stack: list[str] = []
         self._history_limit = 60
-        self._revision = 0
         self._pending_before: str | None = None
         self._pending_elements: list[UIElement] = []
         self._current_file: Path | None = None
         self._busy = False
         self._pool = QThreadPool.globalInstance()
         self._worker: InterpretWorker | None = None
-        self._last_property_snapshot = 0.0
 
         self._build_ui()
         self._build_actions()
@@ -105,7 +131,8 @@ class MainWindow(QMainWindow):
         self.engine_combo = QComboBox()
         self.engine_combo.addItem("OCR off (geometry only)", "off")
         self.engine_combo.addItem("PaddleOCR · English (recommended)", "paddle")
-        self.engine_combo.addItem("TrOCR · handwritten (experimental)", "trocr")
+        if _trocr_dependencies_available():
+            self.engine_combo.addItem("TrOCR · handwritten (experimental)", "trocr")
         self.engine_combo.setToolTip(
             "PaddleOCR is the recommended OCR based on a small local test. "
             "When installed, it is selected automatically. OCR models may download on first use; "
@@ -123,14 +150,47 @@ class MainWindow(QMainWindow):
         root_layout.addLayout(toolbar)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        # Make the canvas fill the entire left panel. A separate header and
+        # inner layout margins left visible strips that looked drawable but did
+        # not belong to the DrawingCanvas widget, so mouse strokes could not
+        # start there.
         self.canvas = DrawingCanvas()
         canvas_frame = QFrame()
         canvas_frame.setFrameShape(QFrame.Shape.StyledPanel)
         canvas_layout = QVBoxLayout(canvas_frame)
-        canvas_layout.setContentsMargins(8, 8, 8, 8)
-        canvas_header = QLabel("1 · Freehand sketch")
-        canvas_header.setStyleSheet("font-weight:600;font-size:13px;")
-        canvas_layout.addWidget(canvas_header)
+        canvas_layout.setContentsMargins(0, 0, 0, 0)
+        canvas_layout.setSpacing(0)
+        tool_row = QHBoxLayout()
+        tool_row.addWidget(QLabel("Tool:"))
+        self.drawing_tool_combo = QComboBox()
+        for label, key in (
+            ("Freehand", "freehand"),
+            ("Select", "select"),
+            ("Box", "panel"),
+            ("Button", "button"),
+            ("Text field", "text_field"),
+            ("Label", "label"),
+            ("Table", "table"),
+            ("Chart", "chart"),
+            ("Ellipse", "ellipse"),
+        ):
+            self.drawing_tool_combo.addItem(label, key)
+        self.drawing_tool_combo.setToolTip("Freehand preserves your drawing. Choose a component tool, then drag on the canvas to create a clean component directly.")
+        tool_row.addWidget(self.drawing_tool_combo, 1)
+        canvas_layout.addLayout(tool_row)
+        edit_row = QHBoxLayout()
+        self.snap_checkbox = QCheckBox("Snap 10 px")
+        self.snap_checkbox.setChecked(True)
+        self.duplicate_button = QPushButton("Duplicate")
+        self.align_combo = QComboBox()
+        for label, key in (("Left", "left"), ("Center X", "center_x"), ("Right", "right"), ("Top", "top"), ("Center Y", "center_y"), ("Bottom", "bottom")):
+            self.align_combo.addItem(label, key)
+        self.align_button = QPushButton("Align")
+        edit_row.addWidget(self.snap_checkbox)
+        edit_row.addWidget(self.duplicate_button)
+        edit_row.addWidget(self.align_combo, 1)
+        edit_row.addWidget(self.align_button)
+        canvas_layout.addLayout(edit_row)
         canvas_layout.addWidget(self.canvas, 1)
 
         middle_splitter = QSplitter(Qt.Orientation.Vertical)
@@ -184,8 +244,21 @@ class MainWindow(QMainWindow):
         self.sample_button.clicked.connect(self.save_ocr_sample)
         self.review_button.clicked.connect(self.select_next_uncertain)
         self.canvas.stroke_added.connect(self.add_stroke)
+        self.canvas.element_added.connect(self.add_created_element)
+        self.canvas.element_geometry_changed.connect(self.commit_element_geometry)
+        self.canvas.selection_toggled.connect(self.toggle_selected_element)
+        self.snap_checkbox.toggled.connect(lambda checked: setattr(self.canvas, "snap_enabled", bool(checked)))
+        self.duplicate_button.clicked.connect(self.duplicate_selected_elements)
+        self.align_button.clicked.connect(self.align_selected_elements)
+        self.preview.table_cell_changed.connect(self.update_table_cell)
+        self.preview.selection_toggled.connect(self.toggle_selected_element)
+        self.drawing_tool_combo.currentIndexChanged.connect(
+            lambda _index: self.canvas.set_tool(str(self.drawing_tool_combo.currentData()))
+        )
+        self.canvas.set_tool(str(self.drawing_tool_combo.currentData()))
         self.canvas.element_selected.connect(self.select_element)
         self.preview.element_selected.connect(self.select_element)
+        self.preview.text_edit_finished.connect(self.update_preview_text)
         self.properties.change_requested.connect(self.change_element_property)
 
     @staticmethod
@@ -232,8 +305,8 @@ class MainWindow(QMainWindow):
         self._redo_stack.append(self._serialize())
         state = self._undo_stack.pop()
         self.document = DesignDocument.from_dict(json.loads(state))
-        self._revision += 1
         self.selected_id = None
+        self.selected_ids.clear()
         self._refresh_all()
         self.statusBar().showMessage("Undid the previous design change.", 2500)
 
@@ -243,8 +316,8 @@ class MainWindow(QMainWindow):
         self._undo_stack.append(self._serialize())
         state = self._redo_stack.pop()
         self.document = DesignDocument.from_dict(json.loads(state))
-        self._revision += 1
         self.selected_id = None
+        self.selected_ids.clear()
         self._refresh_all()
         self.statusBar().showMessage("Redid the design change.", 2500)
 
@@ -253,9 +326,157 @@ class MainWindow(QMainWindow):
             return
         self._snapshot()
         self.document.strokes.append(stroke)
-        self._revision += 1
         self.canvas.set_document(self.document)
+        # Redraw the original ink without rebuilding controls in the preview.
+        self.preview.update_strokes()
+        self._refresh_code()
         self.statusBar().showMessage(f"Captured stroke · {len(self.document.strokes)} total. Interpret when you're ready.", 2500)
+
+    def _refresh_selection_ui(self):
+        valid_ids = {element.element_id for element in self.document.elements}
+        self.selected_ids.intersection_update(valid_ids)
+        if self.selected_id not in self.selected_ids:
+            self.selected_id = next(iter(self.selected_ids), None)
+        primary = next((e for e in self.document.elements if e.element_id == self.selected_id), None)
+        self.canvas.set_selected_many(self.selected_ids, self.selected_id)
+        self.preview.set_selected_many(self.selected_ids, self.selected_id)
+        self.properties.set_element(primary)
+        self.delete_button.setEnabled(bool(self.selected_ids) and not self._busy)
+        self.duplicate_button.setEnabled(bool(self.selected_ids) and not self._busy)
+        self.align_button.setEnabled(len(self.selected_ids) >= 2 and not self._busy)
+
+    def toggle_selected_element(self, element_id):
+        if element_id is None:
+            return
+        if not any(e.element_id == element_id for e in self.document.elements):
+            return
+        if element_id in self.selected_ids:
+            self.selected_ids.remove(element_id)
+        else:
+            self.selected_ids.add(element_id)
+            self.selected_id = element_id
+        if self.selected_id not in self.selected_ids:
+            self.selected_id = next(iter(self.selected_ids), None)
+        self._refresh_selection_ui()
+
+    def commit_element_geometry(self, element_id: str, x: float, y: float, width: float, height: float):
+        element = next((e for e in self.document.elements if e.element_id == element_id), None)
+        if element is None or self._busy:
+            return
+        width = min(max(8.0, float(width)), float(self.document.width))
+        height = min(max(8.0, float(height)), float(self.document.height))
+        x = min(max(0.0, float(x)), float(self.document.width) - width)
+        y = min(max(0.0, float(y)), float(self.document.height) - height)
+        if (element.x, element.y, element.width, element.height) == (x, y, width, height):
+            return
+        self._snapshot()
+        element.x, element.y, element.width, element.height = x, y, width, height
+        element.user_modified = True
+        element.confirmed = True
+        element.confidence = 1.0
+        element.alternatives = []
+        self._refresh_all()
+        self.statusBar().showMessage("Component position or size updated.", 2200)
+
+    def duplicate_selected_elements(self):
+        if self._busy or not self.selected_ids:
+            return
+        selected = [copy.deepcopy(e) for e in self.document.elements if e.element_id in self.selected_ids]
+        if not selected:
+            return
+        self._snapshot()
+        created = []
+        for element in selected:
+            element.element_id = new_id()
+            element.source_stroke_ids = []
+            element.x = min(float(self.document.width) - element.width, element.x + 20)
+            element.y = min(float(self.document.height) - element.height, element.y + 20)
+            element.user_modified = True
+            element.confirmed = True
+            element.confidence = 1.0
+            element.alternatives = []
+            created.append(element)
+        self.document.elements.extend(created)
+        self.selected_ids = {e.element_id for e in created}
+        self.selected_id = created[-1].element_id
+        self._refresh_all()
+        self.statusBar().showMessage(f"Duplicated {len(created)} component(s).", 2200)
+
+    def align_selected_elements(self):
+        if self._busy or len(self.selected_ids) < 2:
+            self.statusBar().showMessage("Hold Shift and select at least two components, then choose Align.", 3000)
+            return
+        chosen = [e for e in self.document.elements if e.element_id in self.selected_ids]
+        anchor = next((e for e in chosen if e.element_id == self.selected_id), chosen[0])
+        mode = str(self.align_combo.currentData())
+        self._snapshot()
+        for element in chosen:
+            if element.element_id == anchor.element_id:
+                continue
+            if mode == "left":
+                element.x = anchor.x
+            elif mode == "center_x":
+                element.x = anchor.x + (anchor.width - element.width) / 2
+            elif mode == "right":
+                element.x = anchor.x + anchor.width - element.width
+            elif mode == "top":
+                element.y = anchor.y
+            elif mode == "center_y":
+                element.y = anchor.y + (anchor.height - element.height) / 2
+            elif mode == "bottom":
+                element.y = anchor.y + anchor.height - element.height
+            # Alignment takes precedence over snapping so aligned edges remain exact.
+            element.x = min(max(0.0, element.x), max(0.0, self.document.width-element.width))
+            element.y = min(max(0.0, element.y), max(0.0, self.document.height-element.height))
+            element.user_modified = True
+            element.confirmed = True
+            element.confidence = 1.0
+            element.alternatives = []
+        self._refresh_all()
+        self.statusBar().showMessage("Selected components aligned.", 2200)
+
+    def update_table_cell(self, element_id: str, row: int, column: int, value: str):
+        element = next((e for e in self.document.elements if e.element_id == element_id), None)
+        if element is None or element.element_type != "table" or self._busy:
+            return
+        if not (0 <= row < element.table_rows and 0 <= column < element.table_columns):
+            return
+        value = str(value)[:500]
+        if element.table_cells[row][column] == value:
+            return
+        self._snapshot()
+        element.table_cells[row][column] = value
+        element.user_modified = True
+        element.confirmed = True
+        element.confidence = 1.0
+        element.alternatives = []
+        self._refresh_code()
+        self.canvas.update()
+        self.undo_button.setEnabled(bool(self._undo_stack) and not self._busy)
+        self.redo_button.setEnabled(bool(self._redo_stack) and not self._busy)
+
+    def add_created_element(self, element: UIElement):
+        if self._busy:
+            return
+        self._snapshot()
+        self.document.elements.append(element)
+        self.selected_id = element.element_id
+        self.selected_ids = {element.element_id}
+        self._refresh_all()
+        self.statusBar().showMessage(f"Added {element.element_type.replace('_', ' ')}.", 2200)
+
+    def _set_recognition_busy(self, busy: bool) -> None:
+        """Keep all controls consistent while the background OCR worker is active."""
+        self._busy = busy
+        self.canvas.drawing_enabled = not busy
+        for widget in (
+            self.canvas, self.preview, self.properties, self.interpret_button,
+            self.undo_button, self.redo_button, self.clear_button, self.save_button,
+            self.open_button, self.export_button, self.delete_button, self.sample_button,
+            self.engine_combo, self.drawing_tool_combo, self.snap_checkbox,
+            self.duplicate_button, self.align_combo, self.align_button, self.review_button,
+        ):
+            widget.setEnabled(not busy)
 
     def interpret_sketch(self):
         if self._busy:
@@ -268,26 +489,18 @@ class MainWindow(QMainWindow):
             self._snapshot()
             result = recognize_sketch(copy.deepcopy(self.document))
             self.document.elements = preserve_manual_edits(self.document.elements, result)
-            self._revision += 1
             self.selected_id = None
+            self.selected_ids.clear()
             self._refresh_all()
             self.statusBar().showMessage(f"Interpreted sketch · {len(result)} candidate components.", 4000)
             return
         self._pending_before = self._serialize()
         self._pending_elements = copy.deepcopy(self.document.elements)
         snapshot = copy.deepcopy(self.document)
-        self._busy = True
-        self.canvas.drawing_enabled = False
-        self.canvas.setEnabled(False)
-        self.preview.setEnabled(False)
-        self.properties.setEnabled(False)
-        for button in (self.interpret_button, self.undo_button, self.redo_button, self.clear_button,
-                       self.save_button, self.open_button, self.export_button, self.delete_button, self.sample_button, self.engine_combo):
-            button.setEnabled(False)
-        if engine == "off":
-            self.statusBar().showMessage("Interpreting sketch using geometry only…")
-        else:
-            self.statusBar().showMessage("Loading OCR model and interpreting sketch. First use may download model files…")
+        self._set_recognition_busy(True)
+        self.statusBar().showMessage(
+            "Loading OCR model and interpreting sketch. First use may download model files…"
+        )
         worker = InterpretWorker(snapshot, engine)
         worker.signals.finished.connect(self._interpret_finished)
         self._worker = worker
@@ -295,14 +508,7 @@ class MainWindow(QMainWindow):
 
     def _interpret_finished(self, result, error):
         self._worker = None
-        self._busy = False
-        self.canvas.drawing_enabled = True
-        self.canvas.setEnabled(True)
-        self.preview.setEnabled(True)
-        self.properties.setEnabled(True)
-        for button in (self.interpret_button, self.undo_button, self.redo_button, self.clear_button,
-                       self.save_button, self.open_button, self.export_button, self.delete_button, self.sample_button, self.engine_combo):
-            button.setEnabled(True)
+        self._set_recognition_busy(False)
         if error:
             self._pending_elements = []
             self._pending_before = None
@@ -316,43 +522,145 @@ class MainWindow(QMainWindow):
             self._redo_stack.clear()
         self.document.elements = preserve_manual_edits(self._pending_elements, result)
         self._pending_elements = []
-        self._revision += 1
         self.selected_id = None
+        self.selected_ids.clear()
         self._refresh_all()
         count = sum(element.needs_review for element in self.document.elements)
         self.statusBar().showMessage(f"Interpreted sketch · {len(result)} components, {count} to review.", 5000)
 
-    def select_element(self, element_id):
-        self.selected_id = element_id if element_id and any(e.element_id == element_id for e in self.document.elements) else None
-        self.delete_button.setEnabled(self.selected_id is not None and not self._busy)
-        element = next((e for e in self.document.elements if e.element_id == self.selected_id), None)
-        self.properties.set_element(element)
-        self.canvas.set_selected(self.selected_id)
-        self.preview.set_design(self.document, self.selected_id)
-
-    def change_element_property(self, field: str, value):
-        element = next((e for e in self.document.elements if e.element_id == self.selected_id), None)
-        if element is None or self._busy:
-            return
-        old = getattr(element, field, None)
-        if old == value:
+    def update_preview_text(self, element_id: str, value: str):
+        element = next((item for item in self.document.elements if item.element_id == element_id), None)
+        if element is None or element.text == value or self._busy:
             return
         self._snapshot()
-        if field == "element_type":
-            element.set_type(str(value), user_confirmed=True)
-        elif field in ("x", "y", "width", "height"):
-            setattr(element, field, float(value))
-            element.user_modified = True
-        elif field in ("text", "placeholder"):
-            setattr(element, field, str(value))
-            element.user_modified = True
-        else:
+        element.text = value
+        element.user_modified = True
+        element.confirmed = True
+        element.confidence = 1.0
+        element.alternatives = []
+        # Do not rebuild the preview widgets after a field commit: the current
+        # QLineEdit is already showing the edited value, and rebuilding here
+        # would interrupt focus or discard the next field's click event.
+        self._refresh_code()
+        self.canvas.set_document(self.document)
+        self.properties.set_element(element)
+        self.preview.set_selected(self.selected_id)
+        self.undo_button.setEnabled(bool(self._undo_stack) and not self._busy)
+        self.redo_button.setEnabled(bool(self._redo_stack) and not self._busy)
+        uncertain_count = sum(item.needs_review for item in self.document.elements)
+        self.review_button.setText(f"{uncertain_count} to review")
+        self.review_button.setEnabled(uncertain_count > 0)
+        self.statusBar().showMessage("Text field updated.", 2200)
+
+    def select_element(self, element_id):
+        valid_ids = {e.element_id for e in self.document.elements}
+        self.selected_id = element_id if element_id in valid_ids else None
+        self.selected_ids = {self.selected_id} if self.selected_id else set()
+        self.delete_button.setEnabled(self.selected_id is not None and not self._busy)
+        self._refresh_selection_ui()
+
+    def change_element_property(self, field: str, value):
+        """Validate one property edit before recording it in undo history."""
+        if self._busy:
             return
-        self._revision += 1
+        element = next(
+            (item for item in self.document.elements if item.element_id == self.selected_id),
+            None,
+        )
+        if element is None:
+            return
+
+        supported_fields = {
+            "element_type", "x", "y", "width", "height", "text", "placeholder",
+            "chart_values", "table_rows", "table_columns",
+        }
+        if field not in supported_fields:
+            return
+
+        normalized_value = value
+        new_bounds = None
+        new_table = None
+        try:
+            if field == "element_type":
+                normalized_value = str(value)
+                if normalized_value not in SUPPORTED_ELEMENT_TYPES:
+                    return
+            elif field in ("x", "y", "width", "height"):
+                requested = float(value)
+                if not math.isfinite(requested):
+                    return
+                canvas_width = float(self.document.width)
+                canvas_height = float(self.document.height)
+                width = min(max(8.0, float(element.width)), canvas_width)
+                height = min(max(8.0, float(element.height)), canvas_height)
+                x = min(max(0.0, float(element.x)), max(0.0, canvas_width - width))
+                y = min(max(0.0, float(element.y)), max(0.0, canvas_height - height))
+
+                if field == "x":
+                    x = min(max(0.0, requested), max(0.0, canvas_width - width))
+                elif field == "y":
+                    y = min(max(0.0, requested), max(0.0, canvas_height - height))
+                elif field == "width":
+                    width = min(max(8.0, requested), max(8.0, canvas_width - x))
+                else:
+                    height = min(max(8.0, requested), max(8.0, canvas_height - y))
+                new_bounds = (x, y, width, height)
+                old_bounds = (element.x, element.y, element.width, element.height)
+                if new_bounds == old_bounds:
+                    return
+            elif field in ("text", "placeholder"):
+                normalized_value = str(value)
+            elif field == "chart_values":
+                if element.element_type != "chart":
+                    return
+                normalized_value = [float(item) for item in value]
+                if len(normalized_value) > 100 or any(not math.isfinite(item) for item in normalized_value):
+                    return
+            elif field in ("table_rows", "table_columns"):
+                if element.element_type != "table":
+                    return
+                size = int(value)
+                if not 1 <= size <= 20:
+                    return
+                rows = size if field == "table_rows" else element.table_rows
+                columns = size if field == "table_columns" else element.table_columns
+                old_cells = element.table_cells
+                new_cells = [
+                    [str(old_cells[r][c]) if r < len(old_cells) and c < len(old_cells[r]) else ""
+                     for c in range(columns)]
+                    for r in range(rows)
+                ]
+                new_table = (rows, columns, new_cells)
+                current = (element.table_rows, element.table_columns, element.table_cells)
+                if new_table == current:
+                    return
+        except (TypeError, ValueError, OverflowError):
+            return
+
+        current_value = getattr(element, field, None)
+        if field not in ("x", "y", "width", "height", "table_rows", "table_columns") and current_value == normalized_value:
+            return
+
+        # Do not create no-op/invalid history entries. Snapshot immediately before mutation.
+        self._snapshot()
+        if field == "element_type":
+            element.set_type(normalized_value, user_confirmed=True)
+        elif field in ("x", "y", "width", "height"):
+            element.x, element.y, element.width, element.height = new_bounds
+        elif field in ("text", "placeholder", "chart_values"):
+            setattr(element, field, normalized_value)
+        elif field in ("table_rows", "table_columns"):
+            element.table_rows, element.table_columns, element.table_cells = new_table
+
+        # Any explicit user edit resolves the component's recognition uncertainty.
+        element.user_modified = True
+        element.confirmed = True
+        element.confidence = 1.0
+        element.alternatives = []
         self._refresh_all()
-        # Restore panel focus/content after rebuilding widgets.
         self.properties.set_element(element)
         self.statusBar().showMessage("Component updated · preview and code synchronized.", 2200)
+
 
     def select_next_uncertain(self):
         uncertain = [e for e in self.document.elements if e.needs_review]
@@ -365,17 +673,18 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Review this component's type in the Properties panel.", 3000)
 
     def delete_selected_element(self):
-        if self._busy or self.selected_id is None:
+        if self._busy or not self.selected_ids:
             return
         before = len(self.document.elements)
         self._snapshot()
-        self.document.elements = [e for e in self.document.elements if e.element_id != self.selected_id]
-        if len(self.document.elements) == before:
+        self.document.elements = [e for e in self.document.elements if e.element_id not in self.selected_ids]
+        removed_count = before - len(self.document.elements)
+        if removed_count <= 0:
             return
+        self.selected_ids.clear()
         self.selected_id = None
-        self._revision += 1
         self._refresh_all()
-        self.statusBar().showMessage("Selected component deleted. Undo restores it.", 2500)
+        self.statusBar().showMessage(f"Deleted {removed_count} component(s). Undo restores them.", 2500)
 
     def clear_drawing(self):
         if self._busy:
@@ -389,7 +698,6 @@ class MainWindow(QMainWindow):
         self.document.strokes.clear()
         self.document.elements.clear()
         self.selected_id = None
-        self._revision += 1
         self._refresh_all()
         self.statusBar().showMessage("Drawing cleared.", 2500)
 
@@ -401,25 +709,18 @@ class MainWindow(QMainWindow):
         if not path.lower().endswith(".json"):
             path += ".json"
         target = Path(path)
-        temp_path: Path | None = None
+        previous_name = self.document.name
+        self.document.name = target.stem
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            self.document.name = target.stem
-            with tempfile.NamedTemporaryFile(
-                mode="w", encoding="utf-8", dir=target.parent,
-                prefix=f".{target.name}.", suffix=".tmp", delete=False,
-            ) as temp:
-                temp_path = Path(temp.name)
-                json.dump(self.document.to_dict(), temp, indent=2, ensure_ascii=False)
-            os.replace(temp_path, target)
-            temp_path = None
-            self._current_file = target
-            self._refresh_code()
-            self.statusBar().showMessage(f"Saved project to {target}", 4000)
-        except OSError as exc:
-            if temp_path is not None:
-                temp_path.unlink(missing_ok=True)
+            contents = json.dumps(self.document.to_dict(), indent=2, ensure_ascii=False)
+            _atomic_write_text(target, contents)
+        except (OSError, TypeError, ValueError) as exc:
+            self.document.name = previous_name
             QMessageBox.critical(self, "Could not save project", str(exc))
+            return
+        self._current_file = target
+        self._refresh_code()
+        self.statusBar().showMessage(f"Saved project to {target}", 4000)
 
     def open_project(self):
         if self._busy:
@@ -430,14 +731,14 @@ class MainWindow(QMainWindow):
         try:
             data = json.loads(Path(path).read_text(encoding="utf-8"))
             new_document = DesignDocument.from_dict(data)
-        except (OSError, ValueError, TypeError, OverflowError, json.JSONDecodeError) as exc:
+        except (OSError, ValueError, TypeError, OverflowError) as exc:
             QMessageBox.critical(self, "Could not open project", str(exc))
             return
         self._snapshot()
         self.document = new_document
         self._current_file = Path(path)
         self.selected_id = None
-        self._revision += 1
+        self.selected_ids.clear()
         self._refresh_all()
         self.statusBar().showMessage(f"Opened {Path(path).name}", 3000)
 
@@ -448,9 +749,9 @@ class MainWindow(QMainWindow):
         if not path.lower().endswith(".py"):
             path += ".py"
         try:
-            Path(path).write_text(generate_python(self.document), encoding="utf-8")
+            _atomic_write_text(Path(path), generate_python(self.document))
             self.statusBar().showMessage(f"Exported Python source to {path}", 4000)
-        except OSError as exc:
+        except (OSError, TypeError, ValueError) as exc:
             QMessageBox.critical(self, "Could not export Python", str(exc))
 
     def save_ocr_sample(self):
@@ -474,35 +775,72 @@ class MainWindow(QMainWindow):
             truth_target = target.with_suffix(".txt")
             if target.exists() or truth_target.exists():
                 raise FileExistsError("The image or label already exists. Choose a new filename to preserve the existing sample.")
-            with target.open("xb") as image_file:
-                image.save(image_file, format="PNG")
+            image_created = False
+            truth_created = False
             try:
+                with target.open("xb") as image_file:
+                    image_created = True
+                    image.save(image_file, format="PNG")
                 with truth_target.open("x", encoding="utf-8") as truth_file:
+                    truth_created = True
                     truth_file.write(truth.strip())
-            except FileExistsError:
-                # The image was just created by this save; remove only that new file if a
-                # competing writer created the label in the meantime.
-                target.unlink(missing_ok=True)
+            except Exception:
+                # Remove only the paired files created by this operation; existing
+                # samples are never overwritten or removed on an error.
+                if truth_created:
+                    truth_target.unlink(missing_ok=True)
+                if image_created:
+                    target.unlink(missing_ok=True)
                 raise
             QMessageBox.information(self, "Sample saved", f"Saved image and expected text:\n{target}\n{target.with_suffix('.txt')}\n\nCollect the same set of samples before comparing OCR engines.")
         except Exception as exc:
             QMessageBox.critical(self, "Could not save sample", str(exc))
 
     def _refresh_all(self):
+        """Refresh the document views, then update shared selection state once."""
         self.canvas.set_document(self.document)
-        self.canvas.set_selected(self.selected_id)
         self.preview.set_design(self.document, self.selected_id)
         self._refresh_code()
         self.undo_button.setEnabled(bool(self._undo_stack) and not self._busy)
         self.redo_button.setEnabled(bool(self._redo_stack) and not self._busy)
-        self.delete_button.setEnabled(self.selected_id is not None and not self._busy)
-        uncertain_count = sum(e.needs_review for e in self.document.elements)
+        uncertain_count = sum(element.needs_review for element in self.document.elements)
         self.review_button.setText(f"{uncertain_count} to review")
         self.review_button.setEnabled(uncertain_count > 0)
-        self.properties.set_element(next((e for e in self.document.elements if e.element_id == self.selected_id), None))
+        self._refresh_selection_ui()
+
 
     def _refresh_code(self):
-        self.code_editor.setPlainText(generate_python(self.document))
+        """Preserve editor view state while generated source changes."""
+        editor = self.code_editor
+        generated = generate_python(self.document)
+        if editor.toPlainText() == generated:
+            return
+
+        vertical_position = editor.verticalScrollBar().value()
+        horizontal_position = editor.horizontalScrollBar().value()
+        old_cursor = editor.textCursor()
+        cursor_position = old_cursor.position()
+        cursor_anchor = old_cursor.anchor()
+
+        editor.setPlainText(generated)
+
+        # Keep the caret/selection near the same source location after undo/redo.
+        restored_cursor = editor.textCursor()
+        restored_cursor.setPosition(min(cursor_anchor, len(generated)))
+        restored_cursor.setPosition(
+            min(cursor_position, len(generated)),
+            QTextCursor.MoveMode.KeepAnchor,
+        )
+        editor.setTextCursor(restored_cursor)
+
+        # Restore scrolling last because setting the cursor can auto-scroll the editor.
+        editor.verticalScrollBar().setValue(
+            min(vertical_position, editor.verticalScrollBar().maximum())
+        )
+        editor.horizontalScrollBar().setValue(
+            min(horizontal_position, editor.horizontalScrollBar().maximum())
+        )
+
 
     def closeEvent(self, event):
         if self._busy:

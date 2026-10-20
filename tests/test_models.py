@@ -3,6 +3,18 @@ from sketch2gui.models import DesignDocument, Stroke, UIElement, preserve_manual
 
 
 class ModelTests(unittest.TestCase):
+    def test_chart_values_round_trip(self):
+        chart = UIElement("chart", 10, 10, 200, 100, chart_values=[1, 4.5, 2])
+        restored = UIElement.from_dict(chart.to_dict())
+        self.assertEqual(restored.chart_values, [1.0, 4.5, 2.0])
+
+    def test_table_dimensions_and_cells_round_trip(self):
+        table = UIElement("table", 10, 10, 240, 150, table_rows=2, table_columns=2,
+                          table_cells=[["Name", "Room"], ["Ada", "Lab 1"]])
+        restored = UIElement.from_dict(table.to_dict())
+        self.assertEqual((restored.table_rows, restored.table_columns), (2, 2))
+        self.assertEqual(restored.table_cells, [["Name", "Room"], ["Ada", "Lab 1"]])
+
     def test_document_round_trip_preserves_strokes_and_elements(self):
         document = DesignDocument(strokes=[Stroke([(1, 2), (3, 4)])],
                                   elements=[UIElement("search_field", 10, 20, 150, 35,
@@ -45,6 +57,20 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(result[0].element_id, previous.element_id)
         self.assertTrue(result[0].confirmed)
 
+    def test_drawing_tool_components_survive_interpretation(self):
+        button = UIElement(
+            "button", 30, 40, 120, 40, text="My button",
+            confirmed=True, user_modified=True,
+        )
+        detected = UIElement(
+            "panel", 28, 38, 125, 45, confidence=0.4,
+            source_stroke_ids=["sketch-outline"],
+        )
+        preserved = preserve_manual_edits([button], [detected])
+        self.assertEqual(len(preserved), 1)
+        self.assertEqual(preserved[0].element_type, "button")
+        self.assertEqual(preserved[0].text, "My button")
+
     def test_newly_drawn_strokes_do_not_inherit_old_correction(self):
         old = UIElement("search_field", 10, 20, 170, 40, confirmed=True, user_modified=True,
                         source_stroke_ids=["old-stroke"])
@@ -62,6 +88,37 @@ class ModelTests(unittest.TestCase):
             DesignDocument.from_dict({"strokes": {}, "elements": []})
         with self.assertRaisesRegex(ValueError, "JSON object"):
             DesignDocument.from_dict([])
+
+    def test_non_finite_stroke_data_is_rejected(self):
+        for points in ([[float("nan"), 2]], [[1, float("inf")]]):
+            with self.subTest(points=points), self.assertRaisesRegex(ValueError, "finite"):
+                Stroke.from_dict({"points": points})
+        with self.assertRaisesRegex(ValueError, "finite"):
+            Stroke([], width=float("inf"))
+
+    def test_non_finite_component_geometry_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "finite"):
+            UIElement("button", float("nan"), 0, 100, 40)
+        with self.assertRaisesRegex(ValueError, "finite"):
+            UIElement("button", 0, 0, 100, 40, confidence=float("inf"))
+
+    def test_malformed_numeric_project_fields_get_clear_errors(self):
+        with self.assertRaisesRegex(ValueError, "chart values must be finite numbers"):
+            UIElement.from_dict({"type": "chart", "chart_values": ["not-a-number"]})
+        with self.assertRaisesRegex(ValueError, "canvas dimensions must be integers"):
+            DesignDocument.from_dict({"format": "sketch2gui", "canvas": {"width": "wide"}})
+        with self.assertRaisesRegex(ValueError, "table dimensions must be integers"):
+            UIElement.from_dict({"type": "table", "table_rows": "many"})
+        with self.assertRaisesRegex(ValueError, "Stroke points must be a list"):
+            Stroke(None)
+
+    def test_unsupported_project_version_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "Unsupported Sketch2GUI project version"):
+            DesignDocument.from_dict({"format": "sketch2gui", "version": 2})
+
+    def test_source_stroke_ids_must_be_an_array(self):
+        with self.assertRaisesRegex(ValueError, "source stroke IDs"):
+            UIElement.from_dict({"type": "panel", "source_stroke_ids": "not-an-array"})
 
     def test_unknown_alternatives_are_ignored_on_load(self):
         element = UIElement.from_dict({"type":"panel", "bounds":{"width":80,"height":80}, "alternatives":["bogus","button"]})

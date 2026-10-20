@@ -15,3 +15,14 @@ benchmark/samples/*.jpeg
 benchmark/samples/*.txt
 *.tmp
 .DS_Store
+# Local OCR sample sets and preprocessing outputs
+benchmark/line_samples/
+benchmark/preprocessed/
+benchmark/preprocessed*/
+.venv-paddle/
+.env
+.env.*
+!.env.example
+# Local edit backups created while applying source updates
+.sketch2gui-backups/
+*.backup-*

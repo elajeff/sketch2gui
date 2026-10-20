@@ -3,12 +3,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import copy
+import math
 from typing import Any
 from uuid import uuid4
 
 SUPPORTED_ELEMENT_TYPES = {
     "button", "text_field", "search_field", "label", "checkbox",
-    "dropdown", "table", "panel", "radio_button", "line",
+    "dropdown", "table", "panel", "radio_button", "line", "chart", "ellipse",
 }
 
 
@@ -22,8 +23,36 @@ class Stroke:
     stroke_id: str = field(default_factory=lambda: new_id("stroke"))
     width: float = 3.0
 
+    def __post_init__(self) -> None:
+        try:
+            width = float(self.width)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Stroke width must be a finite number") from exc
+        if not math.isfinite(width):
+            raise ValueError("Stroke width must be a finite number")
+        self.width = min(20.0, max(0.5, width))
+
+        if not isinstance(self.points, (list, tuple)):
+            raise ValueError("Stroke points must be a list of coordinate pairs")
+        normalized_points: list[tuple[float, float]] = []
+        for point in self.points:
+            if not isinstance(point, (list, tuple)) or len(point) != 2:
+                raise ValueError("Invalid stroke points")
+            try:
+                x, y = float(point[0]), float(point[1])
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("Stroke coordinates must be finite numbers") from exc
+            if not math.isfinite(x) or not math.isfinite(y):
+                raise ValueError("Stroke coordinates must be finite numbers")
+            normalized_points.append((x, y))
+        self.points = normalized_points
+
     def to_dict(self) -> dict[str, Any]:
-        return {"id": self.stroke_id, "points": [[round(x, 2), round(y, 2)] for x, y in self.points], "width": self.width}
+        return {
+            "id": self.stroke_id,
+            "points": [[round(x, 2), round(y, 2)] for x, y in self.points],
+            "width": self.width,
+        }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Stroke":
@@ -32,8 +61,7 @@ class Stroke:
         points = data.get("points", [])
         if not isinstance(points, list) or any(not isinstance(p, (list, tuple)) or len(p) != 2 for p in points):
             raise ValueError("Invalid stroke points")
-        clean = [(float(p[0]), float(p[1])) for p in points]
-        return cls(clean, str(data.get("id") or new_id("stroke")), max(0.5, min(20.0, float(data.get("width", 3.0)))))
+        return cls(points, str(data.get("id") or new_id("stroke")), data.get("width", 3.0))
 
 
 @dataclass
@@ -52,15 +80,64 @@ class UIElement:
     user_modified: bool = False
     source_stroke_ids: list[str] = field(default_factory=list)
     ocr_confidence: float | None = None
+    chart_values: list[float] = field(default_factory=list)
+    table_rows: int = 3
+    table_columns: int = 3
+    table_cells: list[list[str]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if self.element_type not in SUPPORTED_ELEMENT_TYPES:
             raise ValueError(f"Unsupported component type: {self.element_type}")
-        self.x = float(self.x)
-        self.y = float(self.y)
-        self.width = max(8.0, float(self.width))
-        self.height = max(8.0, float(self.height))
-        self.confidence = max(0.0, min(1.0, float(self.confidence)))
+        try:
+            self.x, self.y, self.width, self.height = (
+                float(value) for value in (self.x, self.y, self.width, self.height)
+            )
+            confidence = float(self.confidence)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Component geometry and confidence must be finite numbers") from exc
+        if not all(math.isfinite(value) for value in (self.x, self.y, self.width, self.height, confidence)):
+            raise ValueError("Component geometry and confidence must be finite numbers")
+        self.width = max(8.0, self.width)
+        self.height = max(8.0, self.height)
+        self.confidence = max(0.0, min(1.0, confidence))
+        if self.ocr_confidence is not None:
+            try:
+                ocr_confidence = float(self.ocr_confidence)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("OCR confidence must be a finite number or None") from exc
+            if not math.isfinite(ocr_confidence):
+                raise ValueError("OCR confidence must be a finite number or None")
+            self.ocr_confidence = max(0.0, min(1.0, ocr_confidence))
+        if not isinstance(self.chart_values, list) or len(self.chart_values) > 100:
+            raise ValueError("Chart values must be a list containing at most 100 numbers")
+        clean_values = []
+        for value in self.chart_values:
+            try:
+                number = float(value)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("Chart values must be finite numbers") from exc
+            if not math.isfinite(number):
+                raise ValueError("Chart values must be finite numbers")
+            clean_values.append(number)
+        self.chart_values = clean_values
+        try:
+            self.table_rows = max(1, min(20, int(self.table_rows)))
+            self.table_columns = max(1, min(20, int(self.table_columns)))
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Table dimensions must be integers between 1 and 20") from exc
+        if self.element_type != "table":
+            self.table_cells = []
+        else:
+            if not isinstance(self.table_cells, list):
+                raise ValueError("Table cells must be a list of rows")
+            normalized_cells: list[list[str]] = []
+            for row_index in range(self.table_rows):
+                row = self.table_cells[row_index] if row_index < len(self.table_cells) else []
+                if not isinstance(row, list):
+                    raise ValueError("Each table row must be a list")
+                normalized_cells.append([str(row[col])[:500] if col < len(row) else ""
+                                         for col in range(self.table_columns)])
+            self.table_cells = normalized_cells
 
     @property
     def needs_review(self) -> bool:
@@ -86,8 +163,14 @@ class UIElement:
             "bounds": {"x": self.x, "y": self.y, "width": self.width, "height": self.height},
             "text": self.text, "placeholder": self.placeholder,
             "confidence": self.confidence, "alternatives": list(self.alternatives),
-            "confirmed": self.confirmed, "user_modified": self.user_modified, "source_stroke_ids": list(self.source_stroke_ids),
+            "confirmed": self.confirmed,
+            "user_modified": self.user_modified,
+            "source_stroke_ids": list(self.source_stroke_ids),
             "ocr_confidence": self.ocr_confidence,
+            "chart_values": list(self.chart_values),
+            "table_rows": self.table_rows,
+            "table_columns": self.table_columns,
+            "table_cells": [list(row) for row in self.table_cells],
         }
 
     @classmethod
@@ -98,8 +181,28 @@ class UIElement:
         if not isinstance(bounds, dict):
             raise ValueError("Project element bounds must be a JSON object")
         alternatives = data.get("alternatives", [])
+        source_stroke_ids = data.get("source_stroke_ids", [])
+        chart_values_data = data.get("chart_values", [])
+        table_cells_data = data.get("table_cells", [])
+        if not isinstance(source_stroke_ids, list):
+            raise ValueError("Project source stroke IDs must be a JSON array")
+        if not isinstance(table_cells_data, list) or any(not isinstance(row, list) for row in table_cells_data):
+            raise ValueError("Project table cells must be an array of row arrays")
+        try:
+            table_rows = int(data.get("table_rows", 3))
+            table_columns = int(data.get("table_columns", 3))
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Project table dimensions must be integers between 1 and 20") from exc
+        if not 1 <= table_rows <= 20 or not 1 <= table_columns <= 20:
+            raise ValueError("Project table dimensions must be between 1 and 20")
+        if not isinstance(chart_values_data, list) or len(chart_values_data) > 100:
+            raise ValueError("Project chart values must be an array containing at most 100 numbers")
         if not isinstance(alternatives, list):
             raise ValueError("Project element alternatives must be a JSON array")
+        try:
+            chart_values = [float(value) for value in chart_values_data]
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Project chart values must be finite numbers") from exc
         return cls(
             element_type=str(data.get("type", "panel")),
             x=float(bounds.get("x", 0)), y=float(bounds.get("y", 0)),
@@ -108,8 +211,11 @@ class UIElement:
             element_id=str(data.get("id") or new_id()), confidence=float(data.get("confidence", 1.0)),
             alternatives=[str(x) for x in alternatives if x in SUPPORTED_ELEMENT_TYPES],
             confirmed=bool(data.get("confirmed", False)), user_modified=bool(data.get("user_modified", False)),
-            source_stroke_ids=[str(x) for x in data.get("source_stroke_ids", [])],
+            source_stroke_ids=[str(x) for x in source_stroke_ids],
             ocr_confidence=(None if data.get("ocr_confidence") is None else float(data["ocr_confidence"])),
+            chart_values=chart_values,
+            table_rows=table_rows, table_columns=table_columns,
+            table_cells=[[str(value)[:500] for value in row] for row in table_cells_data],
         )
 
 
@@ -128,6 +234,27 @@ def preserve_manual_edits(previous: list[UIElement], detected: list[UIElement]) 
     for element in detected:
         old = saved.get(frozenset(element.source_stroke_ids)) if element.source_stroke_ids else None
         result.append(copy.deepcopy(old) if old is not None else element)
+
+    # Components created with the drawing tools have no source-stroke IDs.
+    # Keep these explicit user choices when the user later interprets freehand art.
+    for manual in previous:
+        if not (manual.user_modified and not manual.source_stroke_ids):
+            continue
+        mx1, my1 = manual.x, manual.y
+        mx2, my2 = mx1 + manual.width, my1 + manual.height
+        survivors = []
+        for candidate in result:
+            cx1, cy1 = candidate.x, candidate.y
+            cx2, cy2 = cx1 + candidate.width, cy1 + candidate.height
+            intersection = max(0.0, min(mx2, cx2) - max(mx1, cx1)) * max(0.0, min(my2, cy2) - max(my1, cy1))
+            smaller = min(manual.width * manual.height, candidate.width * candidate.height)
+            larger = max(manual.width * manual.height, candidate.width * candidate.height)
+            area_similarity = smaller / larger if larger > 0 else 0.0
+            if smaller > 0 and area_similarity >= 0.50 and intersection / smaller >= 0.72:
+                continue
+            survivors.append(candidate)
+        result = survivors
+        result.append(copy.deepcopy(manual))
     return result
 
 
@@ -153,6 +280,9 @@ class DesignDocument:
             raise ValueError("Project data must be a JSON object")
         if data.get("format") not in (None, "sketch2gui"):
             raise ValueError("This is not a Sketch2GUI project file")
+        version = data.get("version", 1)
+        if isinstance(version, bool) or version != 1:
+            raise ValueError(f"Unsupported Sketch2GUI project version: {version!r}")
         canvas = data.get("canvas", {})
         if not isinstance(canvas, dict):
             raise ValueError("Project canvas must be a JSON object")
@@ -162,8 +292,11 @@ class DesignDocument:
             raise ValueError("Project strokes and elements must be JSON arrays")
         if any(not isinstance(item, dict) for item in strokes_data + elements_data):
             raise ValueError("Each project stroke and element must be a JSON object")
-        width = max(200, min(3000, int(canvas.get("width", 800))))
-        height = max(200, min(3000, int(canvas.get("height", 600))))
+        try:
+            width = max(200, min(3000, int(canvas.get("width", 800))))
+            height = max(200, min(3000, int(canvas.get("height", 600))))
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Project canvas dimensions must be integers between 200 and 3000") from exc
         return cls(
             width=width, height=height, name=str(data.get("name", "Untitled sketch")),
             strokes=[Stroke.from_dict(s) for s in strokes_data],

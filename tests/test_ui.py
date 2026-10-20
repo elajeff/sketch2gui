@@ -3,12 +3,12 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from PIL import Image
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QEvent, QPoint, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLineEdit, QPushButton
 
@@ -29,8 +29,15 @@ class MainWindowEditingTests(unittest.TestCase):
         self.window._refresh_all()
 
     def tearDown(self):
-        self.window.close()
+        # Explicitly destroy each top-level Qt window before the shared
+        # QApplication is torn down at interpreter exit. close() alone
+        # only hides a QWidget unless WA_DeleteOnClose is enabled.
+        window = self.window
+        window.close()
+        window.deleteLater()
+        self.app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         self.app.processEvents()
+        self.window = None
 
     def test_component_type_edit_updates_review_preview_and_code(self):
         self.window.select_element(self.element.element_id)
@@ -75,12 +82,15 @@ class MainWindowEditingTests(unittest.TestCase):
     def test_paddle_is_default_when_both_optional_packages_are_available(self):
         from sketch2gui.ui import main_window
 
-        with patch.object(main_window.importlib.util, "find_spec", side_effect=[object(), object()]):
+        with patch.object(main_window.importlib.util, "find_spec", return_value=object()):
             window = MainWindow()
         try:
             self.assertEqual(window.engine_combo.currentData(), "paddle")
         finally:
             window.close()
+            window.deleteLater()
+            self.app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+            self.app.processEvents()
 
     def test_text_and_placeholder_edits_update_the_preview_and_generated_source(self):
         button = UIElement("button", 20, 30, 180, 45, text="Submit")
@@ -183,21 +193,284 @@ class MainWindowEditingTests(unittest.TestCase):
             self.assertEqual(image_path.read_bytes(), original_image)
             self.assertEqual(truth_path.read_text(encoding="utf-8"), "Original label")
 
-    def test_interpret_button_turns_canvas_strokes_into_reviewable_suggestions(self):
+    def test_new_freehand_stroke_updates_preview_without_interpretation(self):
+        self.window.document.elements = []
+        self.window._refresh_all()
+        stroke = Stroke([(80, 100), (180, 100)], width=3.0)
+        self.window.add_stroke(stroke)
+        self.assertEqual(self.window.preview.document.strokes, [stroke])
+        self.assertIn("self._sketch_strokes", self.window.code_editor.toPlainText())
+
+    def test_freehand_release_without_intermediate_mouse_move_updates_generated_code(self):
+        self.window.document.elements = []
+        self.window._refresh_all()
+        code_before = self.window.code_editor.toPlainText()
+        self.window.resize(1280, 800)
+        self.window.show()
+        self.app.processEvents()
+
+        # Deliberately send press/release only, without a mouse-move event.
+        QTest.mousePress(self.window.canvas, Qt.MouseButton.LeftButton, pos=QPoint(45, 45))
+        QTest.mouseRelease(self.window.canvas, Qt.MouseButton.LeftButton, pos=QPoint(170, 130))
+        self.app.processEvents()
+
+        self.assertEqual(len(self.window.document.strokes), 1)
+        generated = self.window.code_editor.toPlainText()
+        self.assertNotEqual(generated, code_before)
+        self.assertIn("self._sketch_strokes = [", generated)
+
+    def test_adding_a_stroke_preserves_existing_preview_controls(self):
+        button = UIElement("button", 30, 40, 140, 42, text="Keep me")
+        self.window.document.elements = [button]
+        self.window._refresh_all()
+        original_widget = self.window.preview._widgets[0]
+
+        self.window.add_stroke(Stroke([(80, 100), (180, 100)]))
+
+        self.assertIs(self.window.preview._widgets[0], original_widget)
+        self.assertEqual(self.window.preview.document.strokes, self.window.document.strokes)
+        self.assertEqual(self.window.preview._widgets[0].text(), "Keep me")
+
+    def test_failed_ocr_sample_write_leaves_no_partial_files(self):
+        self.window.document.strokes = [Stroke([(10, 10), (50, 40)])]
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as folder:
+            image_path = Path(folder) / "failed-sample.png"
+            broken_image = Mock()
+            broken_image.save.side_effect = OSError("disk full")
+            with patch("sketch2gui.ui.main_window.QInputDialog.getText",
+                       return_value=("Sample label", True)), \
+                 patch("sketch2gui.ui.main_window.QFileDialog.getSaveFileName",
+                       return_value=(str(image_path), "")), \
+                 patch("sketch2gui.ui.main_window.render_strokes", return_value=broken_image), \
+                 patch("sketch2gui.ui.main_window.QMessageBox.critical") as show_error:
+                self.window.save_ocr_sample()
+
+            show_error.assert_called_once()
+            self.assertFalse(image_path.exists())
+            self.assertFalse(image_path.with_suffix(".txt").exists())
+
+    def test_recognition_busy_state_disables_review_button(self):
+        self.window.document.elements = [
+            UIElement("button", 20, 30, 120, 40, confidence=0.4)
+        ]
+        self.window._refresh_all()
+        self.assertTrue(self.window.review_button.isEnabled())
+
+        self.window._set_recognition_busy(True)
+        self.assertFalse(self.window.review_button.isEnabled())
+
+        self.window._set_recognition_busy(False)
+        self.window._refresh_all()
+        self.assertTrue(self.window.review_button.isEnabled())
+
+    def test_freehand_art_is_visible_in_preview(self):
+        self.window.document.elements = []
+        self.window.document.strokes = [Stroke([(80, 100), (180, 100)], width=3.0)]
+        self.window._refresh_all()
+        self.window.resize(1280, 800)
+        self.window.show()
+        self.app.processEvents()
+
+        preview = self.window.preview
+        image = preview.grab().toImage()
+        scale = min(
+            image.width() / max(self.window.document.width, 1),
+            image.height() / max(self.window.document.height, 1),
+        )
+        offset_x = max(0, round((image.width() - self.window.document.width * scale) / 2))
+        offset_y = max(0, round((image.height() - self.window.document.height * scale) / 2))
+        pixel = image.pixelColor(round(offset_x + 130 * scale), round(offset_y + 100 * scale))
+        self.assertLess(max(pixel.red(), pixel.green(), pixel.blue()), 150)
+
+    def test_shape_tool_creates_a_button_without_recognition(self):
         self.window.document.elements = []
         self.window._refresh_all()
         self.window.resize(1280, 800)
         self.window.show()
         self.app.processEvents()
+        index = self.window.drawing_tool_combo.findData("button")
+        self.window.drawing_tool_combo.setCurrentIndex(index)
         canvas = self.window.canvas
-        scale, offset_x, offset_y = canvas._canvas_transform()
+        scale_x, scale_y, offset_x, offset_y = canvas._canvas_transform()
+        start = QPoint(round(offset_x + 40 * scale_x), round(offset_y + 50 * scale_y))
+        end = QPoint(round(offset_x + 180 * scale_x), round(offset_y + 95 * scale_y))
+        QTest.mousePress(canvas, Qt.MouseButton.LeftButton, pos=start)
+        QTest.mouseMove(canvas, QPoint(start.x() + 35, start.y() + 12), 1)
+        QTest.mouseMove(canvas, end, 1)
+        QTest.mouseRelease(canvas, Qt.MouseButton.LeftButton, pos=end)
+        self.app.processEvents()
+
+        self.assertEqual(len(self.window.document.elements), 1)
+        self.assertEqual(self.window.document.elements[0].element_type, "button")
+        self.assertTrue(self.window.document.elements[0].confirmed)
+        self.assertIn("Button", self.window.code_editor.toPlainText())
+        self.assertIsInstance(self.window.preview._widgets[0], QPushButton)
+
+    def test_inline_text_field_edit_updates_model_preview_and_code(self):
+        field = UIElement("text_field", 30, 40, 180, 38, placeholder="Enter text...")
+        self.window.document.elements = [field]
+        self.window._refresh_all()
+        widget = self.window.preview._widgets[0]
+        QTest.mouseClick(widget, Qt.MouseButton.LeftButton)
+        self.assertFalse(widget.isReadOnly())
+        QTest.keyClicks(widget, "Search records")
+        QTest.keyClick(widget, Qt.Key.Key_Return)
+        self.app.processEvents()
+        self.assertEqual(self.window.document.elements[0].text, "Search records")
+        self.assertIn("setText('Search records')", self.window.code_editor.toPlainText())
+        self.assertEqual(self.window.preview._widgets[0].text(), "Search records")
+
+    def test_chart_values_edit_drives_preview_and_generated_code(self):
+        chart = UIElement("chart", 30, 40, 300, 180)
+        self.window.document.elements = [chart]
+        self.window._refresh_all()
+        self.window.select_element(chart.element_id)
+        editor = self.window.properties.chart_values_edit
+        editor.setText("2, 9, 4")
+        editor.editingFinished.emit()
+        self.assertEqual(self.window.document.elements[0].chart_values, [2.0, 9.0, 4.0])
+        self.assertEqual(self.window.preview._widgets[0].values, [2.0, 9.0, 4.0])
+        self.assertIn("ChartWidget([2.0, 9.0, 4.0], self)", self.window.code_editor.toPlainText())
+
+    def test_canvas_select_tool_moves_and_resizes_component(self):
+        component = UIElement("button", 40, 40, 100, 50, text="Move me", confirmed=True)
+        self.window.document.elements = [component]
+        self.window._refresh_all()
+        self.window.resize(1280, 800)
+        self.window.show()
+        self.app.processEvents()
+        self.window.drawing_tool_combo.setCurrentIndex(self.window.drawing_tool_combo.findData("select"))
+        self.app.processEvents()
+        canvas = self.window.canvas
+        sx, sy, ox, oy = canvas._canvas_transform()
+        point = lambda x, y: QPoint(round(ox + x * sx), round(oy + y * sy))
+        start = point(80, 60)
+        end = point(115, 83)
+        QTest.mousePress(canvas, Qt.MouseButton.LeftButton, pos=start)
+        QTest.mouseMove(canvas, end, 10)
+        QTest.mouseRelease(canvas, Qt.MouseButton.LeftButton, pos=end)
+        self.app.processEvents()
+        self.assertEqual((component.x, component.y), (80.0, 60.0))
+
+        start = point(component.x + component.width, component.y + component.height)
+        end = point(component.x + component.width + 27, component.y + component.height + 21)
+        QTest.mousePress(canvas, Qt.MouseButton.LeftButton, pos=start)
+        QTest.mouseMove(canvas, end, 10)
+        QTest.mouseRelease(canvas, Qt.MouseButton.LeftButton, pos=end)
+        self.app.processEvents()
+        self.assertGreaterEqual(component.width, 120.0)
+        self.assertGreaterEqual(component.height, 60.0)
+
+    def test_undo_preserves_code_editor_scroll_and_cursor(self):
+        self.window.document.elements = [
+            UIElement("button", 10, 10 + index * 6, 150, 30, text=f"Button {index}")
+            for index in range(70)
+        ]
+        self.window.resize(1280, 800)
+        self.window.show()
+        self.window._refresh_all()
+        self.app.processEvents()
+        editor = self.window.code_editor
+        self.assertGreater(editor.verticalScrollBar().maximum(), 15)
+
+        # Capture a useful place in the generated source, then make an undoable edit.
+        editor.verticalScrollBar().setValue(15)
+        cursor = editor.textCursor()
+        cursor.setPosition(min(120, len(editor.toPlainText())))
+        editor.setTextCursor(cursor)
+        editor.verticalScrollBar().setValue(15)
+        expected_position = editor.textCursor().position()
+        expected_scroll = editor.verticalScrollBar().value()
+
+        self.window._snapshot()
+        self.window.document.elements.append(UIElement("button", 10, 500, 150, 30, text="Added later"))
+        self.window._refresh_all()
+        self.app.processEvents()
+        editor.verticalScrollBar().setValue(expected_scroll)
+
+        self.window.undo()
+        self.app.processEvents()
+        self.assertEqual(editor.verticalScrollBar().value(), expected_scroll)
+        self.assertEqual(editor.textCursor().position(), expected_position)
+        self.assertNotIn("Added later", editor.toPlainText())
+
+    def test_property_edits_stay_inside_canvas_and_confirm_component(self):
+        component = UIElement("button", 770, 580, 20, 20, confidence=0.3, alternatives=["panel"])
+        self.window.document.elements = [component]
+        self.window.selected_id = component.element_id
+        self.window.selected_ids = {component.element_id}
+        self.window._refresh_all()
+
+        self.window.change_element_property("width", 5000)
+        self.assertLessEqual(component.x + component.width, self.window.document.width)
+        self.assertLessEqual(component.y + component.height, self.window.document.height)
+        self.assertEqual(component.width, 30)
+        self.assertFalse(component.needs_review)
+
+        self.window.change_element_property("x", 5000)
+        self.window.change_element_property("y", 5000)
+        self.assertLessEqual(component.x + component.width, self.window.document.width)
+        self.assertLessEqual(component.y + component.height, self.window.document.height)
+
+    def test_unknown_property_does_not_create_undo_history(self):
+        self.window.select_element(self.element.element_id)
+        before_undo = list(self.window._undo_stack)
+        before_redo = list(self.window._redo_stack)
+        self.window.change_element_property("not_a_real_property", "value")
+        self.assertEqual(self.window._undo_stack, before_undo)
+        self.assertEqual(self.window._redo_stack, before_redo)
+
+    def test_duplicate_alignment_and_move_resize(self):
+        first = UIElement("button", 20, 30, 100, 40, text="One", confirmed=True)
+        second = UIElement("button", 180, 100, 100, 40, text="Two", confirmed=True)
+        self.window.document.elements = [first, second]
+        self.window._refresh_all()
+        self.window.select_element(first.element_id)
+        self.window.toggle_selected_element(second.element_id)
+        self.window.align_combo.setCurrentIndex(self.window.align_combo.findData("left"))
+        self.window.align_selected_elements()
+        self.assertEqual(self.window.document.elements[1].x, self.window.document.elements[0].x)
+
+        self.window.commit_element_geometry(first.element_id, 40, 50, 130, 45)
+        self.assertEqual((first.x, first.y, first.width, first.height), (40.0, 50.0, 130.0, 45.0))
+        self.window.select_element(first.element_id)
+        self.window.duplicate_selected_elements()
+        self.assertEqual(len(self.window.document.elements), 3)
+        self.assertEqual(len({item.element_id for item in self.window.document.elements}), len(self.window.document.elements))
+        self.assertNotEqual(self.window.document.elements[-1].element_id, first.element_id)
+
+    def test_table_configuration_and_cell_edits_update_model_and_code(self):
+        table = UIElement("table", 10, 10, 220, 120)
+        self.window.document.elements = [table]
+        self.window._refresh_all()
+        self.window.select_element(table.element_id)
+        self.window.change_element_property("table_rows", 2)
+        self.window.change_element_property("table_columns", 2)
+        self.window.update_table_cell(table.element_id, 0, 0, "Name")
+        self.assertEqual((table.table_rows, table.table_columns), (2, 2))
+        self.assertEqual(table.table_cells[0][0], "Name")
+        self.assertIn("QTableWidget(2, 2, self)", self.window.code_editor.toPlainText())
+        self.assertIn("QTableWidgetItem('Name')", self.window.code_editor.toPlainText())
+
+    def test_interpret_button_turns_canvas_strokes_into_reviewable_suggestions(self):
+        self.window.document.elements = []
+        self.window._refresh_all()
+        # This test checks synchronous geometry-only interpretation. Optional OCR
+        # packages may be installed on some machines and make Paddle the default,
+        # which runs asynchronously and makes the test environment-dependent.
+        self.window.engine_combo.setCurrentIndex(0)
+        self.window.resize(1280, 800)
+        self.window.show()
+        self.app.processEvents()
+        canvas = self.window.canvas
+        scale_x, scale_y, offset_x, offset_y = canvas._canvas_transform()
         design_points = [
             (40, 40), (90, 40), (140, 40), (180, 40),
             (180, 60), (180, 90), (180, 110),
             (140, 110), (90, 110), (40, 110),
             (40, 90), (40, 60), (40, 40),
         ]
-        canvas_points = [QPoint(round(offset_x + x * scale), round(offset_y + y * scale))
+        canvas_points = [QPoint(round(offset_x + x * scale_x), round(offset_y + y * scale_y))
                          for x, y in design_points]
         QTest.mousePress(canvas, Qt.MouseButton.LeftButton, pos=canvas_points[0])
         for point in canvas_points[1:-1]:
@@ -206,8 +479,18 @@ class MainWindowEditingTests(unittest.TestCase):
         self.app.processEvents()
 
         self.assertEqual(len(self.window.document.strokes), 1)
+        self.window.engine_combo.setCurrentIndex(self.window.engine_combo.findData("off"))
         self.window.interpret_button.click()
 
+        # Interpretation runs in a worker. Process Qt events until its completion
+        # callback has updated the document, rather than asserting before it returns.
+        for _ in range(500):
+            self.app.processEvents()
+            if self.window.document.elements and not self.window._busy:
+                break
+            QTest.qWait(10)
+        self.app.processEvents()
+        self.assertFalse(self.window._busy, "Interpretation did not finish within 5 seconds")
         self.assertEqual(len(self.window.document.elements), 1)
         self.assertTrue(self.window.document.elements[0].needs_review)
         self.assertEqual(self.window.review_button.text(), "1 to review")
@@ -217,8 +500,8 @@ class MainWindowEditingTests(unittest.TestCase):
         self.window.show()
         self.app.processEvents()
         canvas = self.window.canvas
-        scale, offset_x, offset_y = canvas._canvas_transform()
-        to_canvas = lambda x, y: QPoint(round(offset_x + x * scale), round(offset_y + y * scale))
+        scale_x, scale_y, offset_x, offset_y = canvas._canvas_transform()
+        to_canvas = lambda x, y: QPoint(round(offset_x + x * scale_x), round(offset_y + y * scale_y))
 
         QTest.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=to_canvas(80, 75))
         self.assertEqual(self.window.selected_id, self.element.element_id)

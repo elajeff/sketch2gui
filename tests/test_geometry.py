@@ -45,6 +45,49 @@ class GeometryTests(unittest.TestCase):
         elements = recognize_sketch(document)
         self.assertEqual(len(elements), 1)
 
+    def test_closed_rectangle_with_horizontal_and_vertical_divider_suggests_table(self):
+        outer = rectangle(20, 20, 320, 180)
+        dividers = [line(35, 100, 305, 100), line(170, 35, 170, 165)]
+        elements = recognize_sketch(DesignDocument(strokes=[outer, *dividers]))
+        outer_element = max(elements, key=lambda e: e.width * e.height)
+        self.assertEqual(outer_element.element_type, "table")
+
+    def test_multistroke_table_is_recognized_as_one_table(self):
+        strokes = [
+            line(50, 50, 250, 50), line(50, 150, 250, 150),
+            line(50, 50, 50, 150), line(250, 50, 250, 150),
+            line(150, 50, 150, 150), line(50, 100, 250, 100),
+        ]
+        elements = recognize_sketch(DesignDocument(strokes=strokes))
+        tables = [element for element in elements if element.element_type == "table"]
+        self.assertEqual(len(tables), 1)
+        self.assertEqual(len(tables[0].source_stroke_ids), 6)
+        self.assertFalse(any(element.element_type == "line" for element in elements))
+
+    def test_plain_multistroke_rectangle_is_not_misclassified_as_table(self):
+        strokes = [
+            line(50, 50, 250, 50), line(50, 150, 250, 150),
+            line(50, 50, 50, 150), line(250, 50, 250, 150),
+        ]
+        elements = recognize_sketch(DesignDocument(strokes=strokes))
+        self.assertFalse(any(element.element_type == "table" for element in elements))
+
+    def test_four_separate_edges_are_recognized_as_a_box(self):
+        strokes = [
+            line(40, 40, 240, 40), line(40, 130, 240, 130),
+            line(40, 40, 40, 130), line(240, 40, 240, 130),
+        ]
+        elements = recognize_sketch(DesignDocument(strokes=strokes))
+        self.assertEqual(len(elements), 1)
+        self.assertEqual(elements[0].element_type, "panel")
+        self.assertTrue(elements[0].needs_review)
+        self.assertIn("button", elements[0].alternatives)
+
+    def test_unrecognized_doodle_does_not_create_a_fake_panel(self):
+        doodle = Stroke([(10, 20), (18, 13), (27, 20), (19, 28), (10, 20), (18, 13), (24, 17)])
+        elements = recognize_sketch(DesignDocument(strokes=[doodle]))
+        self.assertFalse(any(element.element_type == "panel" for element in elements))
+
     def test_two_horizontal_rules_suggest_table(self):
         outer = rectangle(20, 20, 320, 180)
         rules = [line(35, 70, 305, 70), line(35, 115, 305, 115)]
@@ -62,6 +105,18 @@ class GeometryTests(unittest.TestCase):
         self.assertEqual(elements[0].text, "Search")
         self.assertAlmostEqual(elements[0].ocr_confidence, 0.82)
         self.assertFalse(elements[0].needs_review)
+
+    def test_low_ocr_score_flags_container_suggestion_for_review(self):
+        outer = rectangle(20, 20, 320, 80)
+        label_strokes = [Stroke([(45, 41), (49, 46), (53, 42), (57, 47), (62, 41)])]
+        fake_ocr = lambda image: SimpleNamespace(text="Search", confidence=0.20)
+
+        elements = recognize_sketch(DesignDocument(strokes=[outer, *label_strokes]), ocr=fake_ocr)
+
+        self.assertEqual(elements[0].element_type, "search_field")
+        self.assertEqual(elements[0].text, "Search")
+        self.assertTrue(elements[0].needs_review)
+        self.assertAlmostEqual(elements[0].ocr_confidence, 0.20)
 
     def test_nested_rectangles_infer_panel_and_keep_child(self):
         outer = rectangle(10, 10, 400, 280)
@@ -84,6 +139,7 @@ class GeometryTests(unittest.TestCase):
         self.assertEqual(len(labels), 1)
         self.assertEqual(labels[0].text, "OK")
         self.assertEqual(len(labels[0].source_stroke_ids), 3)
+        self.assertFalse(labels[0].needs_review)
         self.assertFalse(any(element.element_type == "line" for element in elements))
 
     def test_ocr_failure_keeps_geometry_suggestions_and_original_strokes(self):
@@ -108,11 +164,11 @@ class GeometryTests(unittest.TestCase):
         ]
         result = SimpleNamespace(text="  ", confidence=None)
 
-        elements = recognize_sketch(DesignDocument(strokes=strokes), ocr=lambda image: result)
+        document = DesignDocument(strokes=strokes)
+        elements = recognize_sketch(document, ocr=lambda image: result)
 
         self.assertFalse(any(element.element_type == "label" for element in elements))
-        self.assertTrue(all(stroke.stroke_id in {sid for element in elements for sid in element.source_stroke_ids}
-                            for stroke in strokes))
+        self.assertEqual(document.strokes, strokes)
 
     def test_ocr_punctuation_is_preserved_as_a_text_suggestion(self):
         strokes = [
@@ -127,6 +183,22 @@ class GeometryTests(unittest.TestCase):
 
         self.assertEqual(len(labels), 1)
         self.assertEqual(labels[0].text, "?!.")
+        self.assertTrue(labels[0].needs_review)
+
+    def test_low_ocr_score_flags_standalone_label_for_review(self):
+        strokes = [
+            Stroke([(30, 40), (34, 30), (38, 40)]),
+            Stroke([(42, 40), (42, 30), (47, 40)]),
+            Stroke([(52, 30), (52, 40)]),
+        ]
+        fake_ocr = lambda image: SimpleNamespace(text="OK", confidence=0.20)
+
+        elements = recognize_sketch(DesignDocument(strokes=strokes), ocr=fake_ocr)
+        label = next(element for element in elements if element.element_type == "label")
+
+        self.assertEqual(label.text, "OK")
+        self.assertTrue(label.needs_review)
+        self.assertAlmostEqual(label.ocr_confidence, 0.20)
 
     def test_empty_document_returns_no_elements(self):
         self.assertEqual(recognize_sketch(DesignDocument()), [])
