@@ -9,10 +9,11 @@ from PIL import Image
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QEvent, QPoint, Qt
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLineEdit, QPushButton, QTableWidget
+from PySide6.QtWidgets import QApplication, QComboBox, QLineEdit, QMessageBox, QPushButton, QTableWidget
 
-from sketch2gui.models import Stroke, UIElement
+from sketch2gui.models import DEFAULT_DROPDOWN_OPTIONS, DesignDocument, Stroke, UIElement
 from sketch2gui.ui.main_window import MainWindow, _read_project_file
 
 
@@ -33,11 +34,25 @@ class MainWindowEditingTests(unittest.TestCase):
         # QApplication is torn down at interpreter exit. close() alone
         # only hides a QWidget unless WA_DeleteOnClose is enabled.
         window = self.window
+        # Tests may intentionally leave edits unsaved; don't open a modal dialog in teardown.
+        window._saved_state = window._serialize()
         window.close()
         window.deleteLater()
         self.app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         self.app.processEvents()
         self.window = None
+
+    def test_preview_dropdown_uses_shared_default_options(self):
+        dropdown = UIElement("dropdown", 20, 30, 180, 40)
+        self.window.document.elements = [dropdown]
+        self.window._refresh_all()
+
+        preview_dropdown = self.window.preview._widgets[0]
+        self.assertIsInstance(preview_dropdown, QComboBox)
+        self.assertEqual(
+            [preview_dropdown.itemText(index) for index in range(preview_dropdown.count())],
+            list(DEFAULT_DROPDOWN_OPTIONS),
+        )
 
     def test_component_type_edit_updates_review_preview_and_code(self):
         self.window.select_element(self.element.element_id)
@@ -147,9 +162,11 @@ class MainWindowEditingTests(unittest.TestCase):
 
             self.window.document.elements.clear()
             self.window._refresh_all()
-            with patch("sketch2gui.ui.main_window.QFileDialog.getOpenFileName",
-                       return_value=(str(project_path), "")):
-                self.window.open_project()
+            with patch("sketch2gui.ui.main_window.QMessageBox.warning",
+                       return_value=QMessageBox.StandardButton.Discard):
+                with patch("sketch2gui.ui.main_window.QFileDialog.getOpenFileName",
+                           return_value=(str(project_path), "")):
+                    self.window.open_project()
             self.assertEqual(len(self.window.document.elements), 1)
             self.assertEqual(self.window.document.strokes[0].stroke_id, "original-stroke")
 
@@ -160,6 +177,60 @@ class MainWindowEditingTests(unittest.TestCase):
             exported = python_path.read_text(encoding="utf-8")
             compile(exported, str(python_path), "exec")
             self.assertIn("Open project", exported)
+
+    def test_open_project_cancel_preserves_unsaved_changes(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as folder:
+            project_path = Path(folder) / "replacement.json"
+            replacement = DesignDocument(elements=[UIElement("button", 10, 20, 120, 36, text="Replacement")])
+            project_path.write_text(json.dumps(replacement.to_dict()), encoding="utf-8")
+
+            with patch("sketch2gui.ui.main_window.QFileDialog.getOpenFileName",
+                       return_value=(str(project_path), "")):
+                with patch("sketch2gui.ui.main_window.QMessageBox.warning",
+                           return_value=QMessageBox.StandardButton.Cancel):
+                    self.window.open_project()
+
+        self.assertEqual([item.element_id for item in self.window.document.elements], [self.element.element_id])
+        self.assertTrue(self.window._has_unsaved_changes())
+
+    def test_open_project_discard_replaces_unsaved_changes(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as folder:
+            project_path = Path(folder) / "replacement.json"
+            replacement = DesignDocument(elements=[UIElement("button", 10, 20, 120, 36, text="Replacement")])
+            project_path.write_text(json.dumps(replacement.to_dict()), encoding="utf-8")
+
+            with patch("sketch2gui.ui.main_window.QFileDialog.getOpenFileName",
+                       return_value=(str(project_path), "")):
+                with patch("sketch2gui.ui.main_window.QMessageBox.warning",
+                           return_value=QMessageBox.StandardButton.Discard):
+                    self.window.open_project()
+
+        self.assertEqual(len(self.window.document.elements), 1)
+        self.assertEqual(self.window.document.elements[0].text, "Replacement")
+        self.assertFalse(self.window._has_unsaved_changes())
+
+    def test_close_can_be_cancelled_when_changes_are_unsaved(self):
+        event = QCloseEvent()
+        with patch("sketch2gui.ui.main_window.QMessageBox.warning",
+                   return_value=QMessageBox.StandardButton.Cancel):
+            self.window.closeEvent(event)
+
+        self.assertFalse(event.isAccepted())
+        self.assertTrue(self.window._has_unsaved_changes())
+
+    def test_close_can_save_unsaved_changes_before_exiting(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as folder:
+            project_path = Path(folder) / "save-before-close.json"
+            event = QCloseEvent()
+            with patch("sketch2gui.ui.main_window.QMessageBox.warning",
+                       return_value=QMessageBox.StandardButton.Save):
+                with patch("sketch2gui.ui.main_window.QFileDialog.getSaveFileName",
+                           return_value=(str(project_path), "")):
+                    self.window.closeEvent(event)
+
+            self.assertTrue(event.isAccepted())
+            self.assertTrue(project_path.is_file())
+            self.assertFalse(self.window._has_unsaved_changes())
 
     def test_oversized_project_is_rejected_before_json_parsing(self):
         with tempfile.TemporaryDirectory() as folder:

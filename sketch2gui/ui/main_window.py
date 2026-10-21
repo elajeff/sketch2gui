@@ -27,7 +27,7 @@ from ..models import (
 )
 from ..ocr import load_backend
 from ..sample_images import render_strokes
-from .canvas import DrawingCanvas
+from .canvas import DRAW_TOOL_NAMES, DrawingCanvas
 from .preview import PreviewSurface
 from .properties import PropertiesPanel
 
@@ -35,9 +35,8 @@ from .properties import PropertiesPanel
 MAX_PROJECT_FILE_BYTES = 16 * 1024 * 1024
 
 
-def _check_project_json_depth(value: str | bytes) -> None:
+def _check_project_json_depth(text: str) -> None:
     """Reject excessive JSON nesting before the JSON parser processes it."""
-    text = value.decode("utf-8") if isinstance(value, bytes) else value
     depth = 0
     in_string = False
     escaped = False
@@ -67,8 +66,9 @@ def _read_project_file(path: Path) -> dict:
             raise ValueError(
                 f"Project file exceeds the {MAX_PROJECT_FILE_BYTES // (1024 * 1024)} MiB size limit"
             )
-        _check_project_json_depth(raw.decode('utf-8'))
-        return json.loads(raw.decode("utf-8"))
+        text = raw.decode("utf-8")
+        _check_project_json_depth(text)
+        return json.loads(text)
     except RecursionError as exc:
         raise ValueError("Project JSON is nested too deeply to open safely") from exc
     except UnicodeDecodeError as exc:
@@ -152,6 +152,7 @@ class MainWindow(QMainWindow):
         self._pending_elements: list[UIElement] = []
         self._pending_engine: str | None = None
         self._current_file: Path | None = None
+        self._saved_state: str | None = None
         self._busy = False
         self._pool = QThreadPool.globalInstance()
         self._worker: InterpretWorker | None = None
@@ -160,6 +161,7 @@ class MainWindow(QMainWindow):
         self._build_actions()
         self._refresh_all()
         self.statusBar().showMessage("Draw a rough interface on the left, then choose Interpret sketch.")
+        self._saved_state = self._serialize()
 
     def _build_ui(self):
         root = QWidget()
@@ -214,18 +216,7 @@ class MainWindow(QMainWindow):
         self.drawing_tool_combo = QComboBox()
         tool_label.setBuddy(self.drawing_tool_combo)
         tool_row.addWidget(tool_label)
-        for label, key in (
-            ("Freehand", "freehand"),
-            ("Select", "select"),
-            ("Box", "panel"),
-            ("Button", "button"),
-            ("Text field", "text_field"),
-            ("Label", "label"),
-            ("Table", "table"),
-            ("Chart", "chart"),
-            ("Ellipse", "ellipse"),
-            ("Line", "line"),
-        ):
+        for key, label in DRAW_TOOL_NAMES.items():
             self.drawing_tool_combo.addItem(label, key)
         self.drawing_tool_combo.setToolTip("Freehand preserves your drawing. Choose a component tool, then drag on the canvas to create a clean component directly.")
         tool_row.addWidget(self.drawing_tool_combo, 1)
@@ -344,6 +335,26 @@ class MainWindow(QMainWindow):
     def _serialize(self) -> str:
         return json.dumps(self.document.to_dict(), ensure_ascii=False, sort_keys=True)
 
+    def _has_unsaved_changes(self) -> bool:
+        return self._saved_state is not None and self._serialize() != self._saved_state
+
+    def _confirm_save_changes(self, action: str) -> bool:
+        """Ask before discarding edits; return False when the action is cancelled."""
+        if not self._has_unsaved_changes():
+            return True
+        answer = QMessageBox.warning(
+            self,
+            "Unsaved changes",
+            f"Save changes before {action}?",
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Save,
+        )
+        if answer == QMessageBox.StandardButton.Save:
+            return self.save_project()
+        return answer == QMessageBox.StandardButton.Discard
+
     def _snapshot(self):
         state = self._serialize()
         if not self._undo_stack or self._undo_stack[-1] != state:
@@ -399,7 +410,10 @@ class MainWindow(QMainWindow):
         valid_ids = {element.element_id for element in self.document.elements}
         self.selected_ids.intersection_update(valid_ids)
         if self.selected_id not in self.selected_ids:
-            self.selected_id = next(iter(self.selected_ids), None)
+            self.selected_id = next(
+                (element.element_id for element in self.document.elements if element.element_id in self.selected_ids),
+                None,
+            )
         primary = next((e for e in self.document.elements if e.element_id == self.selected_id), None)
         self.canvas.set_selected_many(self.selected_ids, self.selected_id)
         self.preview.set_selected_many(self.selected_ids, self.selected_id)
@@ -419,7 +433,10 @@ class MainWindow(QMainWindow):
             self.selected_ids.add(element_id)
             self.selected_id = element_id
         if self.selected_id not in self.selected_ids:
-            self.selected_id = next(iter(self.selected_ids), None)
+            self.selected_id = next(
+                (element.element_id for element in self.document.elements if element.element_id in self.selected_ids),
+                None,
+            )
         self._refresh_selection_ui()
 
     def commit_element_geometry(self, element_id: str, x: float, y: float, width: float, height: float):
@@ -434,10 +451,7 @@ class MainWindow(QMainWindow):
             return
         self._snapshot()
         element.x, element.y, element.width, element.height = x, y, width, height
-        element.user_modified = True
-        element.confirmed = True
-        element.confidence = 1.0
-        element.alternatives = []
+        element.mark_user_modified()
         self._refresh_all()
         self.statusBar().showMessage("Component position or size updated.", 2200)
 
@@ -457,10 +471,7 @@ class MainWindow(QMainWindow):
             element.source_stroke_ids = []
             element.x = min(float(self.document.width) - element.width, element.x + 20)
             element.y = min(float(self.document.height) - element.height, element.y + 20)
-            element.user_modified = True
-            element.confirmed = True
-            element.confidence = 1.0
-            element.alternatives = []
+            element.mark_user_modified()
             created.append(element)
         self.document.elements.extend(created)
         self.selected_ids = {e.element_id for e in created}
@@ -506,10 +517,7 @@ class MainWindow(QMainWindow):
         self._snapshot()
         for element, x, y in changes:
             element.x, element.y = x, y
-            element.user_modified = True
-            element.confirmed = True
-            element.confidence = 1.0
-            element.alternatives = []
+            element.mark_user_modified()
         self._refresh_all()
         self.statusBar().showMessage("Selected components aligned.", 2200)
 
@@ -524,10 +532,7 @@ class MainWindow(QMainWindow):
             return
         self._snapshot()
         element.table_cells[row][column] = value
-        element.user_modified = True
-        element.confirmed = True
-        element.confidence = 1.0
-        element.alternatives = []
+        element.mark_user_modified()
         self._refresh_code()
         self.canvas.update()
         self.undo_button.setEnabled(bool(self._undo_stack) and not self._busy)
@@ -634,10 +639,7 @@ class MainWindow(QMainWindow):
             return
         self._snapshot()
         element.text = value
-        element.user_modified = True
-        element.confirmed = True
-        element.confidence = 1.0
-        element.alternatives = []
+        element.mark_user_modified()
         # Do not rebuild the preview widgets after a field commit: the current
         # QLineEdit is already showing the edited value, and rebuilding here
         # would interrupt focus or discard the next field's click event.
@@ -653,10 +655,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Text field updated.", 2200)
 
     def select_element(self, element_id):
-        valid_ids = {e.element_id for e in self.document.elements}
-        self.selected_id = element_id if element_id in valid_ids else None
-        self.selected_ids = {self.selected_id} if self.selected_id else set()
-        self.delete_button.setEnabled(self.selected_id is not None and not self._busy)
+        self.selected_id = element_id
+        self.selected_ids = {element_id} if element_id else set()
         self._refresh_selection_ui()
 
     def change_element_property(self, field: str, value):
@@ -752,11 +752,9 @@ class MainWindow(QMainWindow):
         elif field in ("table_rows", "table_columns"):
             element.table_rows, element.table_columns, element.table_cells = new_table
 
-        # Any explicit user edit resolves the component's recognition uncertainty.
-        element.user_modified = True
-        element.confirmed = True
-        element.confidence = 1.0
-        element.alternatives = []
+        # set_type already confirms type changes; other edits use the same helper.
+        if field != "element_type":
+            element.mark_user_modified()
         self._refresh_all()
         self.properties.set_element(element)
         self.statusBar().showMessage("Component updated · preview and code synchronized.", 2200)
@@ -805,7 +803,7 @@ class MainWindow(QMainWindow):
         default = str(self._current_file or (Path.home() / "Sketch2GUI-project.json"))
         path, _ = QFileDialog.getSaveFileName(self, "Save Sketch2GUI project", default, "Sketch2GUI project (*.json)")
         if not path:
-            return
+            return False
         if not path.lower().endswith(".json"):
             path += ".json"
         target = Path(path)
@@ -817,10 +815,12 @@ class MainWindow(QMainWindow):
         except (OSError, TypeError, ValueError) as exc:
             self.document.name = previous_name
             QMessageBox.critical(self, "Could not save project", str(exc))
-            return
+            return False
         self._current_file = target
         self._refresh_code()
+        self._saved_state = self._serialize()
         self.statusBar().showMessage(f"Saved project to {target}", 4000)
+        return True
 
     def open_project(self):
         if self._busy:
@@ -833,8 +833,11 @@ class MainWindow(QMainWindow):
         except (OSError, ValueError, TypeError, OverflowError, RecursionError) as exc:
             QMessageBox.critical(self, "Could not open project", str(exc))
             return
+        if not self._confirm_save_changes("opening another project"):
+            return
         self._snapshot()
         self.document = new_document
+        self._saved_state = self._serialize()
         self._current_file = Path(path)
         self.selected_id = None
         self.selected_ids.clear()
@@ -947,4 +950,7 @@ class MainWindow(QMainWindow):
             if answer != QMessageBox.StandardButton.Yes:
                 event.ignore()
                 return
+        if not self._confirm_save_changes("closing Sketch2GUI"):
+            event.ignore()
+            return
         event.accept()

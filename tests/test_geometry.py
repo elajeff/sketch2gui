@@ -64,14 +64,6 @@ class GeometryTests(unittest.TestCase):
         self.assertEqual(len(tables[0].source_stroke_ids), 6)
         self.assertFalse(any(element.element_type == "line" for element in elements))
 
-    def test_plain_multistroke_rectangle_is_not_misclassified_as_table(self):
-        strokes = [
-            line(50, 50, 250, 50), line(50, 150, 250, 150),
-            line(50, 50, 50, 150), line(250, 50, 250, 150),
-        ]
-        elements = recognize_sketch(DesignDocument(strokes=strokes))
-        self.assertFalse(any(element.element_type == "table" for element in elements))
-
     def test_four_separate_edges_are_recognized_as_a_box(self):
         strokes = [
             line(40, 40, 240, 40), line(40, 130, 240, 130),
@@ -82,6 +74,7 @@ class GeometryTests(unittest.TestCase):
         self.assertEqual(elements[0].element_type, "panel")
         self.assertTrue(elements[0].needs_review)
         self.assertIn("button", elements[0].alternatives)
+        self.assertFalse(any(element.element_type == "table" for element in elements))
 
     def test_unrecognized_doodle_does_not_create_a_fake_panel(self):
         doodle = Stroke([(10, 20), (18, 13), (27, 20), (19, 28), (10, 20), (18, 13), (24, 17)])

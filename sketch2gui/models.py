@@ -12,6 +12,8 @@ SUPPORTED_ELEMENT_TYPES = {
     "dropdown", "table", "panel", "radio_button", "line", "chart", "ellipse",
 }
 
+DEFAULT_DROPDOWN_OPTIONS = ("Choose...", "Option 1", "Option 2")
+
 MAX_PROJECT_STROKES = 2_000
 MAX_PROJECT_ELEMENTS = 2_000
 MAX_STROKE_POINTS = 25_000
@@ -148,6 +150,13 @@ class UIElement:
     def needs_review(self) -> bool:
         return not self.confirmed and self.confidence < 0.68
 
+    def mark_user_modified(self) -> None:
+        """Mark a deliberate edit as confirmed and clear recognition alternatives."""
+        self.user_modified = True
+        self.confirmed = True
+        self.confidence = 1.0
+        self.alternatives = []
+
     def set_type(self, element_type: str, *, user_confirmed: bool = True) -> None:
         if element_type not in SUPPORTED_ELEMENT_TYPES:
             raise ValueError(f"Unsupported component type: {element_type}")
@@ -165,10 +174,7 @@ class UIElement:
         elif not self.placeholder and element_type == "text_field":
             self.placeholder = self.text or "Enter text..."
         if user_confirmed:
-            self.user_modified = True
-            self.confirmed = True
-            self.confidence = 1.0
-            self.alternatives = []
+            self.mark_user_modified()
 
     def to_dict(self) -> dict[str, Any]:
         return {

@@ -141,11 +141,8 @@ class PropertiesPanel(QWidget):
             self.text_edit.clear()
             self.placeholder_edit.clear()
             self.chart_values_edit.clear()
-            self.chart_values_edit.setEnabled(False)
             self.table_rows_spin.setValue(3)
             self.table_columns_spin.setValue(3)
-            self.table_rows_spin.setEnabled(False)
-            self.table_columns_spin.setEnabled(False)
             self.confidence_label.setText("Recognition status: —")
             self._loading = False
             return

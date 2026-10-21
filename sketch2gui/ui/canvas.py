@@ -11,8 +11,8 @@ from ..models import DesignDocument, Stroke, UIElement
 
 DRAWING_FOOTER_HEIGHT = 28
 DRAW_TOOL_NAMES = {
-    "select": "Select",
     "freehand": "Freehand",
+    "select": "Select",
     "panel": "Box",
     "button": "Button",
     "text_field": "Text field",
@@ -85,11 +85,6 @@ class DrawingCanvas(QWidget):
         self.document = document
         self.update()
 
-    def set_selected(self, element_id: str | None) -> None:
-        self.selected_id = element_id
-        self.selected_ids = {element_id} if element_id else set()
-        self.update()
-
     def _drawing_height(self) -> int:
         """Height of the drawable region, leaving the instruction footer clear."""
         return max(1, self.height() - DRAWING_FOOTER_HEIGHT)
@@ -99,6 +94,16 @@ class DrawingCanvas(QWidget):
         scale_x = self.width() / max(self.document.width, 1)
         scale_y = self._drawing_height() / max(self.document.height, 1)
         return scale_x, scale_y, 0.0, 0.0
+
+    def _element_at(self, point: tuple[float, float]) -> UIElement | None:
+        """Return the topmost component containing a document-space point."""
+        x, y = point
+        return next(
+            (element for element in reversed(self.document.elements)
+             if element.x <= x <= element.x + element.width
+             and element.y <= y <= element.y + element.height),
+            None,
+        )
 
     def mousePressEvent(self, event):
         if event.button() != Qt.MouseButton.LeftButton or not self.drawing_enabled:
@@ -115,15 +120,7 @@ class DrawingCanvas(QWidget):
             return super().mousePressEvent(event)
 
         if self.active_tool == "select":
-            hit = next(
-                (
-                    element
-                    for element in reversed(self.document.elements)
-                    if element.x <= point[0] <= element.x + element.width
-                    and element.y <= point[1] <= element.y + element.height
-                ),
-                None,
-            )
+            hit = self._element_at(point)
             if hit is None:
                 # Rounded widget coordinates can land just outside a corner.
                 # Keep resize handles usable at those edges without making the
@@ -176,11 +173,7 @@ class DrawingCanvas(QWidget):
             self.update()
             return
 
-        selected_element = None
-        for element in reversed(self.document.elements):
-            if element.x <= point[0] <= element.x + element.width and element.y <= point[1] <= element.y + element.height:
-                selected_element = element
-                break
+        selected_element = self._element_at(point)
         self.element_selected.emit(selected_element.element_id if selected_element else None)
         self._current_points = [point]
         self._dragged = False

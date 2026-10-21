@@ -4,7 +4,7 @@ from __future__ import annotations
 import keyword
 import re
 
-from .models import DesignDocument, Stroke, UIElement
+from .models import DEFAULT_DROPDOWN_OPTIONS, DesignDocument, Stroke, UIElement
 
 
 def _safe_identifier(value: str, fallback: str) -> str:
@@ -15,10 +15,7 @@ def _safe_identifier(value: str, fallback: str) -> str:
 
 
 def _format_stroke_assignment(strokes: list[Stroke]) -> list[str]:
-    """Format stroke coordinates readably in generated Python source."""
-    if not strokes:
-        return ["        self._sketch_strokes = []"]
-
+    """Format non-empty stroke coordinates readably in generated Python source."""
     lines = ["        self._sketch_strokes = ["]
     for stroke in strokes:
         lines.extend(["            (", "                ["])
@@ -75,8 +72,7 @@ def generate_python(document: DesignDocument, class_name: str = "GeneratedWindow
             for name in names:
                 if name not in widget_imports:
                     widget_imports.append(name)
-    if widget_imports:
-        imports.extend(["from PySide6.QtWidgets import (", *(f"    {name}," for name in widget_imports), ")"])
+    imports.extend(["from PySide6.QtWidgets import (", *(f"    {name}," for name in widget_imports), ")"])
     imports.extend(("", ""))
 
     helper_classes: list[str] = []
@@ -203,7 +199,7 @@ def _element_code(element: UIElement, index: int) -> list[str]:
         lines.append(f"        {widget} = QCheckBox({element.text or 'Option'!r}, self)")
     elif t == "dropdown":
         lines.append(f"        {widget} = QComboBox(self)")
-        lines.append(f"        {widget}.addItems(['Option 1', 'Option 2', 'Option 3'])")
+        lines.append(f"        {widget}.addItems({list(DEFAULT_DROPDOWN_OPTIONS)!r})")
     elif t == "table":
         lines.append(f"        {widget} = QTableWidget({element.table_rows}, {element.table_columns}, self)")
         table_headers = [f"Column {i + 1}" for i in range(element.table_columns)]

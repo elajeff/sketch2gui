@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from sketch2gui.codegen import generate_python
-from sketch2gui.models import DesignDocument, Stroke, UIElement
+from sketch2gui.models import DEFAULT_DROPDOWN_OPTIONS, DesignDocument, Stroke, UIElement
 
 
 class CodeGenerationTests(unittest.TestCase):
@@ -103,7 +103,11 @@ class CodeGenerationTests(unittest.TestCase):
             ))
             self.assertTrue(any(widget.text() == "Title" for widget in window.findChildren(QLabel)))
             self.assertTrue(any(widget.text() == "Agree" for widget in window.findChildren(QCheckBox)))
-            self.assertEqual(window.findChildren(QComboBox)[0].count(), 3)
+            dropdown = window.findChildren(QComboBox)[0]
+            self.assertEqual(
+                [dropdown.itemText(index) for index in range(dropdown.count())],
+                list(DEFAULT_DROPDOWN_OPTIONS),
+            )
             self.assertTrue(any(widget.text() == "Option" for widget in window.findChildren(QRadioButton)))
 
             table = window.findChild(QTableWidget)

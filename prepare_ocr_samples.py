@@ -164,8 +164,29 @@ class CropWindow:
             if not image_out.exists() and not text_out.exists():
                 break
             index += 1
-        self.image.crop(box).save(image_out)
-        text_out.write_text(truth, encoding="utf-8")
+        created_paths: list[Path] = []
+        try:
+            # Exclusive creation prevents overwriting an existing sample if another
+            # process creates the same pair after the filename check above.
+            with image_out.open("xb") as image_file:
+                created_paths.append(image_out)
+                self.image.crop(box).save(image_file, format="PNG")
+            with text_out.open("x", encoding="utf-8") as text_file:
+                created_paths.append(text_out)
+                text_file.write(truth)
+        except Exception as exc:
+            # Keep the image and its ground-truth label as an all-or-nothing pair.
+            for created_path in reversed(created_paths):
+                try:
+                    created_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            messagebox.showerror(
+                "Could not save crop",
+                f"Could not save the labeled crop:\n{exc}",
+                parent=self.root,
+            )
+            return
         self.saved_count += 1
         self.status.configure(text=self._status_text())
         self.clear_selection()

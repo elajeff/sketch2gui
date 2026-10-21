@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QFrame, QRadioButton, QAbstractItemView,
 )
 
-from ..models import DesignDocument, UIElement
+from ..models import DEFAULT_DROPDOWN_OPTIONS, DesignDocument, UIElement
 
 
 class _ChartPreviewWidget(QWidget):
@@ -75,17 +75,9 @@ class _StrokePreviewLayer(QWidget):
 
     def paintEvent(self, event):
         document = self.owner.document
-        scale = min(
-            self.width() / max(document.width, 1),
-            self.height() / max(document.height, 1),
-        )
+        scale, offset_x, offset_y, _, _ = self.owner._preview_transform()
         if scale <= 0:
             return
-
-        rendered_width = int(document.width * scale)
-        rendered_height = int(document.height * scale)
-        offset_x = max(0, (self.width() - rendered_width) // 2)
-        offset_y = max(0, (self.height() - rendered_height) // 2)
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -218,7 +210,7 @@ class PreviewSurface(QWidget):
             widget = QCheckBox(element.text or "Option", self)
         elif t == "dropdown":
             widget = QComboBox(self)
-            widget.addItems(["Choose...", "Option 1", "Option 2"])
+            widget.addItems(DEFAULT_DROPDOWN_OPTIONS)
         elif t == "table":
             widget = QTableWidget(element.table_rows, element.table_columns, self)
             widget.setHorizontalHeaderLabels([f"Column {index + 1}" for index in range(element.table_columns)])
@@ -245,15 +237,20 @@ class PreviewSurface(QWidget):
             widget.setStyleSheet("QFrame { color:#9AA5B5; }")
         return widget
 
-    def _relayout(self) -> None:
-        sx = self.width() / max(self.document.width, 1)
-        sy = self.height() / max(self.document.height, 1)
-        scale = min(sx, sy)
-        # Preserve the sketch's aspect ratio and center it in the preview surface.
+    def _preview_transform(self) -> tuple[float, int, int, int, int]:
+        """Return the shared scale, centered offset and rendered canvas size."""
+        scale = min(
+            self.width() / max(self.document.width, 1),
+            self.height() / max(self.document.height, 1),
+        )
         rendered_w = int(self.document.width * scale)
         rendered_h = int(self.document.height * scale)
         offset_x = max(0, (self.width() - rendered_w) // 2)
         offset_y = max(0, (self.height() - rendered_h) // 2)
+        return scale, offset_x, offset_y, rendered_w, rendered_h
+
+    def _relayout(self) -> None:
+        scale, offset_x, offset_y, _, _ = self._preview_transform()
         elements_by_id = {element.element_id: element for element in self.document.elements}
         for widget in self._widgets:
             element = elements_by_id.get(widget.property("element_id"))
@@ -316,13 +313,7 @@ class PreviewSurface(QWidget):
         super().mousePressEvent(event)
 
     def paint_editor_overlays(self, painter: QPainter) -> None:
-        sx = self.width() / max(self.document.width, 1)
-        sy = self.height() / max(self.document.height, 1)
-        scale = min(sx, sy)
-        rendered_w = int(self.document.width * scale)
-        rendered_h = int(self.document.height * scale)
-        offset_x = max(0, (self.width() - rendered_w) // 2)
-        offset_y = max(0, (self.height() - rendered_h) // 2)
+        scale, offset_x, offset_y, _, _ = self._preview_transform()
         for element in self.document.elements:
             x = offset_x + int(element.x * scale)
             y = offset_y + int(element.y * scale)
@@ -340,11 +331,5 @@ class PreviewSurface(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor("#F7F8FA"))
-        sx = self.width() / max(self.document.width, 1)
-        sy = self.height() / max(self.document.height, 1)
-        scale = min(sx, sy)
-        rendered_w = int(self.document.width * scale)
-        rendered_h = int(self.document.height * scale)
-        offset_x = max(0, (self.width() - rendered_w) // 2)
-        offset_y = max(0, (self.height() - rendered_h) // 2)
+        scale, offset_x, offset_y, rendered_w, rendered_h = self._preview_transform()
         painter.fillRect(offset_x, offset_y, rendered_w, rendered_h, QColor("white"))

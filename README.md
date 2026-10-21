@@ -7,7 +7,7 @@ Sketch2GUI is a Windows desktop tool for turning rough interface sketches into e
 - **One shared design model.** The canvas, interpreted preview, saved project and code generator use the same serializable model, keeping geometry and component edits synchronized. Original pen strokes remain available as artwork.
 - **Inspectable sketch recognition.** Deterministic geometry heuristics identify likely shapes and simple relationships. Uncertain results are flagged for review instead of presented as guaranteed classifications.
 - **Human-guided correction.** Draw components with an explicit type when geometry alone is ambiguous, or correct and edit recognized components afterward. Move, resize, duplicate, align and multi-select items on the canvas.
-- **Runnable code export.** Export a standalone PySide6 window containing real widgets, editable table data, configurable line charts and preserved freehand strokes. Generated controls are initialized once and painted independently of the window's repaint cycle.
+- **Runnable code export.** Export a standalone PySide6 window containing real widgets, editable table data, configurable line charts and preserved freehand strokes.
 - **Optional local OCR.** PaddleOCR can recognize English text lines to provide extra evidence during interpretation. Once its model files are downloaded, inference runs locally; OCR is not a general-purpose model that understands an entire interface.
 
 ## Recognition approach and limitations

@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 
-def load_engine(path: Path, engine: str) -> dict:
+def load_engine(path: Path, engine: str) -> tuple[dict, dict]:
     data = json.loads(path.read_text(encoding="utf-8"))
     details = data.get("engines", {}).get(engine)
     if not details or "exact_match_accuracy" not in details:
