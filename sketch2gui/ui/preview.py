@@ -34,10 +34,13 @@ class _ChartPreviewWidget(QWidget):
             painter.setPen(QColor("#64748B"))
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Add 2+ values in Properties")
             return
-        low, high = min(self.values), max(self.values)
+        magnitude = max(abs(value) for value in self.values) or 1.0
+        values = [value / magnitude for value in self.values]
+        low, high = min(values), max(values)
         span = high - low or 1.0
-        points = [(left + (right-left)*index/(len(self.values)-1), bottom - (value-low)/span*(bottom-top))
-                  for index, value in enumerate(self.values)]
+        points = [(left + (right - left) * index / (len(values) - 1),
+                   bottom - (value - low) / span * (bottom - top))
+                  for index, value in enumerate(values)]
         painter.setPen(QPen(QColor("#2563EB"), 2.2))
         for first, second in zip(points, points[1:]):
             painter.drawLine(round(first[0]), round(first[1]), round(second[0]), round(second[1]))
@@ -136,9 +139,6 @@ class PreviewSurface(QWidget):
         self._widgets: list[QWidget] = []
         self._editing_widget: QLineEdit | None = None
         self._editing_original = ""
-        self._scale = 1.0
-        self._offset_x = 0
-        self._offset_y = 0
         self._stroke_layer = _StrokePreviewLayer(self)
         self.overlay = PreviewOverlay(self)
         self.setStyleSheet("background: white;")
@@ -248,22 +248,22 @@ class PreviewSurface(QWidget):
     def _relayout(self) -> None:
         sx = self.width() / max(self.document.width, 1)
         sy = self.height() / max(self.document.height, 1)
-        self._scale = min(sx, sy)
+        scale = min(sx, sy)
         # Preserve the sketch's aspect ratio and center it in the preview surface.
-        rendered_w = int(self.document.width * self._scale)
-        rendered_h = int(self.document.height * self._scale)
-        self._offset_x = max(0, (self.width() - rendered_w) // 2)
-        self._offset_y = max(0, (self.height() - rendered_h) // 2)
+        rendered_w = int(self.document.width * scale)
+        rendered_h = int(self.document.height * scale)
+        offset_x = max(0, (self.width() - rendered_w) // 2)
+        offset_y = max(0, (self.height() - rendered_h) // 2)
         elements_by_id = {element.element_id: element for element in self.document.elements}
         for widget in self._widgets:
             element = elements_by_id.get(widget.property("element_id"))
             if element is None:
                 widget.hide()
                 continue
-            x = self._offset_x + int(element.x * self._scale)
-            y = self._offset_y + int(element.y * self._scale)
-            w = max(12, int(element.width * self._scale))
-            h = max(12, int(element.height * self._scale))
+            x = offset_x + int(element.x * scale)
+            y = offset_y + int(element.y * scale)
+            w = max(12, int(element.width * scale))
+            h = max(12, int(element.height * scale))
             widget.setGeometry(x, y, w, h)
             widget.setVisible(True)
         self._stroke_layer.setGeometry(self.rect())

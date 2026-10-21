@@ -106,6 +106,19 @@ class GeometryTests(unittest.TestCase):
         self.assertAlmostEqual(elements[0].ocr_confidence, 0.82)
         self.assertFalse(elements[0].needs_review)
 
+    def test_invalid_ocr_confidence_does_not_discard_recognized_text(self):
+        outer = rectangle(20, 20, 320, 80)
+        label_strokes = [Stroke([(45, 41), (49, 46), (53, 42), (57, 47), (62, 41)])]
+        result = SimpleNamespace(text="Search", confidence="not-a-score")
+
+        elements = recognize_sketch(
+            DesignDocument(strokes=[outer, *label_strokes]), ocr=lambda image: result
+        )
+
+        self.assertEqual(elements[0].text, "Search")
+        self.assertIsNone(elements[0].ocr_confidence)
+        self.assertTrue(elements[0].needs_review)
+
     def test_low_ocr_score_flags_container_suggestion_for_review(self):
         outer = rectangle(20, 20, 320, 80)
         label_strokes = [Stroke([(45, 41), (49, 46), (53, 42), (57, 47), (62, 41)])]

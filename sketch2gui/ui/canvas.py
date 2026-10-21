@@ -384,7 +384,15 @@ class DrawingCanvas(QWidget):
             x2, y2 = self._shape_end
             painter.setPen(QPen(QColor("#2563EB"), 2, Qt.PenStyle.DashLine))
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRect(int(min(x1, x2)), int(min(y1, y2)), int(abs(x2-x1)), int(abs(y2-y1)))
+            if self._drag_tool == "line":
+                if abs(x2 - x1) >= abs(y2 - y1):
+                    middle_y = (y1 + y2) / 2
+                    painter.drawLine(int(min(x1, x2)), int(middle_y), int(max(x1, x2)), int(middle_y))
+                else:
+                    middle_x = (x1 + x2) / 2
+                    painter.drawLine(int(middle_x), int(min(y1, y2)), int(middle_x), int(max(y1, y2)))
+            else:
+                painter.drawRect(int(min(x1, x2)), int(min(y1, y2)), int(abs(x2-x1)), int(abs(y2-y1)))
 
         # Tool-created components are explicit model objects, not approximate ink.
         for element in self.document.elements:
@@ -404,11 +412,13 @@ class DrawingCanvas(QWidget):
                     painter.setPen(QColor("#64748B"))
                     painter.drawText(int(x + 4), int(y + 4), max(1, int(w - 8)), max(1, int(h - 8)), Qt.AlignmentFlag.AlignCenter, "Add values in Properties")
                 else:
-                    low, high = min(element.chart_values), max(element.chart_values)
+                    magnitude = max(abs(value) for value in element.chart_values) or 1.0
+                    values = [value / magnitude for value in element.chart_values]
+                    low, high = min(values), max(values)
                     span = high - low or 1.0
-                    pts = [(x + w*0.10 + (w*0.80)*index/(len(element.chart_values)-1),
-                            y + h*0.90 - ((value-low)/span)*(h*0.75))
-                           for index, value in enumerate(element.chart_values)]
+                    pts = [(x + w * 0.10 + (w * 0.80) * index / (len(values) - 1),
+                            y + h * 0.90 - ((value - low) / span) * (h * 0.75))
+                           for index, value in enumerate(values)]
                     painter.setPen(QPen(QColor("#2563EB"), 2.2))
                     for first, second in zip(pts, pts[1:]):
                         painter.drawLine(int(first[0]), int(first[1]), int(second[0]), int(second[1]))

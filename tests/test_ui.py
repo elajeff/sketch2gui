@@ -13,7 +13,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLineEdit, QPushButton, QTableWidget
 
 from sketch2gui.models import Stroke, UIElement
-from sketch2gui.ui.main_window import MainWindow
+from sketch2gui.ui.main_window import MainWindow, _read_project_file
 
 
 class MainWindowEditingTests(unittest.TestCase):
@@ -160,6 +160,21 @@ class MainWindowEditingTests(unittest.TestCase):
             exported = python_path.read_text(encoding="utf-8")
             compile(exported, str(python_path), "exec")
             self.assertIn("Open project", exported)
+
+    def test_oversized_project_is_rejected_before_json_parsing(self):
+        with tempfile.TemporaryDirectory() as folder:
+            project_path = Path(folder) / "oversized.json"
+            project_path.write_text("{}", encoding="utf-8")
+            with patch("sketch2gui.ui.main_window.MAX_PROJECT_FILE_BYTES", 1):
+                with self.assertRaisesRegex(ValueError, "size limit"):
+                    _read_project_file(project_path)
+
+    def test_deeply_nested_project_json_is_rejected_clearly(self):
+        with tempfile.TemporaryDirectory() as folder:
+            project_path = Path(folder) / "deeply-nested.json"
+            project_path.write_text("[" * 1100 + "0" + "]" * 1100, encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "nested too deeply"):
+                _read_project_file(project_path)
 
     def test_malformed_project_does_not_replace_the_current_design(self):
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as folder:
@@ -435,6 +450,15 @@ class MainWindowEditingTests(unittest.TestCase):
         self.assertEqual(self.window.preview._widgets[0].values, [2.0, 9.0, 4.0])
         self.assertIn("ChartWidget([2.0, 9.0, 4.0], self)", self.window.code_editor.toPlainText())
 
+        editor.setText("1e308, -1e308, 0")
+        editor.editingFinished.emit()
+        self.app.processEvents()
+        self.window.preview._widgets[0].grab()
+        self.window.canvas.grab()
+        self.assertEqual(
+            self.window.document.elements[0].chart_values, [1e308, -1e308, 0.0]
+        )
+
     def test_canvas_select_tool_moves_and_resizes_component(self):
         component = UIElement("button", 40, 40, 100, 50, text="Move me", confirmed=True)
         self.window.document.elements = [component]
@@ -542,6 +566,27 @@ class MainWindowEditingTests(unittest.TestCase):
         self.assertEqual(len({item.element_id for item in self.window.document.elements}), len(self.window.document.elements))
         self.assertNotEqual(self.window.document.elements[-1].element_id, first.element_id)
 
+    def test_no_op_alignment_preserves_redo_history(self):
+        first = UIElement("button", 20, 30, 100, 40, text="One", confirmed=True, user_modified=True)
+        second = UIElement("button", 20, 100, 100, 40, text="Two", confirmed=True, user_modified=True)
+        self.window.document.elements = [first, second]
+        self.window._refresh_all()
+        self.window.select_element(first.element_id)
+        self.window.toggle_selected_element(second.element_id)
+        self.window.align_combo.setCurrentIndex(self.window.align_combo.findData("left"))
+        self.window._snapshot()
+        second.x = 30
+        self.window._refresh_all()
+        self.window.undo()
+        self.window.select_element(first.element_id)
+        self.window.toggle_selected_element(second.element_id)
+        redo_before = list(self.window._redo_stack)
+
+        self.window.align_selected_elements()
+
+        self.assertEqual(self.window._redo_stack, redo_before)
+        self.assertEqual([element.x for element in self.window.document.elements], [20.0, 20.0])
+
     def test_table_configuration_and_cell_edits_update_model_and_code(self):
         table = UIElement("table", 10, 10, 220, 120)
         self.window.document.elements = [table]
@@ -558,9 +603,8 @@ class MainWindowEditingTests(unittest.TestCase):
     def test_interpret_button_turns_canvas_strokes_into_reviewable_suggestions(self):
         self.window.document.elements = []
         self.window._refresh_all()
-        # This test checks synchronous geometry-only interpretation. Optional OCR
-        # packages may be installed on some machines and make Paddle the default,
-        # which runs asynchronously and makes the test environment-dependent.
+        # Force geometry-only mode to keep the test deterministic and avoid
+        # downloading OCR models. Interpretation uses the same background worker.
         self.window.engine_combo.setCurrentIndex(0)
         self.window.resize(1280, 800)
         self.window.show()

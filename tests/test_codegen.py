@@ -22,16 +22,7 @@ class CodeGenerationTests(unittest.TestCase):
         self.assertIn("QApplication(sys.argv)", source)
         self.assertIn("window.show()", source)
 
-    def test_all_supported_element_types_generate_valid_code(self):
-        types = ["button", "text_field", "search_field", "label", "checkbox", "dropdown", "table", "panel", "radio_button", "line", "chart", "ellipse"]
-        elements = [UIElement(kind, 10+i*3, 20+i*2, 140, 40, text='O\'Reilly "form"') for i, kind in enumerate(types)]
-        source = generate_python(DesignDocument(elements=elements))
-        ast.parse(source)
-        for widget_type in ("QPushButton", "QLineEdit", "QLabel", "QCheckBox", "QComboBox", "QTableWidget", "QFrame", "QRadioButton"):
-            self.assertIn(widget_type, source)
-
     def test_export_preserves_original_freehand_strokes(self):
-        from sketch2gui.models import Stroke
         document = DesignDocument(strokes=[Stroke([(12, 18), (24, 35), (39, 22)], width=3.5)])
         source = generate_python(document)
         ast.parse(source)
@@ -81,7 +72,7 @@ class CodeGenerationTests(unittest.TestCase):
                 UIElement("radio_button", 230, 130, 120, 28, text="Option"),
                 UIElement("table", 400, 40, 250, 120, table_rows=2,
                           table_columns=2, table_cells=[["Name", "Room"], ["Ada", "Lab"]]),
-                UIElement("chart", 400, 190, 200, 120, chart_values=[2, 8, 4]),
+                UIElement("chart", 400, 190, 200, 120, chart_values=[1e308, -1e308, 0]),
                 UIElement("ellipse", 650, 190, 80, 60),
                 UIElement("panel", 350, 350, 180, 100),
                 UIElement("line", 100, 330, 150, 8),
@@ -97,6 +88,14 @@ class CodeGenerationTests(unittest.TestCase):
         try:
             window.show()
             app.processEvents()
+            widget_count = len(window.findChildren(QWidget))
+            for _ in range(3):
+                window.repaint()
+                app.processEvents()
+            self.assertEqual(
+                len(window.findChildren(QWidget)), widget_count,
+                "Generated controls must not be recreated during repaint",
+            )
             self.assertEqual(window.findChildren(QPushButton)[0].text(), "Submit")
             self.assertTrue(any(
                 widget.text() == "Ada" and widget.placeholderText() == "Name"
@@ -115,7 +114,7 @@ class CodeGenerationTests(unittest.TestCase):
                          if type(widget).__name__ == "ChartWidget")
             ellipse = next(widget for widget in window.findChildren(QWidget)
                            if type(widget).__name__ == "EllipseWidget")
-            self.assertEqual(chart.values, [2.0, 8.0, 4.0])
+            self.assertEqual(chart.values, [1e308, -1e308, 0.0])
             self.assertGreater(ellipse.width(), 0)
             line_shapes = {
                 widget.frameShape() for widget in window.findChildren(QFrame)

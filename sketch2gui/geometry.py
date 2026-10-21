@@ -16,14 +16,21 @@ def _limit_confidence_with_ocr(base_confidence: float, ocr_confidence: Any) -> f
     OCR scores are model-specific and uncalibrated. This simple mapping is a
     conservative review heuristic, not a probability of correctness.
     """
-    try:
-        score = float(ocr_confidence)
-    except (TypeError, ValueError):
+    score = _normalize_ocr_confidence(ocr_confidence)
+    if score is None:
         return min(base_confidence, 0.55)
-    if not math.isfinite(score):
-        return min(base_confidence, 0.55)
-    score = min(1.0, max(0.0, score))
     return min(base_confidence, 0.35 + 0.5 * score)
+
+def _normalize_ocr_confidence(value: Any) -> float | None:
+    """Return a finite OCR score in [0, 1], or None when the engine omits it."""
+    try:
+        score = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(score):
+        return None
+    return min(1.0, max(0.0, score))
+
 
 def _distance(a: tuple[float, float], b: tuple[float, float]) -> float:
     return math.hypot(a[0] - b[0], a[1] - b[1])
@@ -139,6 +146,10 @@ def _detect_multistroke_tables(strokes: list[Stroke]) -> tuple[list[UIElement], 
             horizontal.append((stroke, stroke_bounds(stroke)))
         elif kind == "vertical":
             vertical.append((stroke, stroke_bounds(stroke)))
+
+    # Pairing every rule with every other rule becomes expensive on dense sketches.
+    if len(horizontal) + len(vertical) > 120:
+        return [], set()
 
     candidates: list[tuple[float, UIElement, set[str]]] = []
     for i, (_first, a) in enumerate(horizontal):
@@ -320,6 +331,9 @@ def _detect_multistroke_rectangles(strokes: list[Stroke], excluded_ids: set[str]
         elif kind == "vertical":
             vertical.append((stroke, stroke_bounds(stroke)))
 
+    if len(horizontal) + len(vertical) > 120:
+        return [], set()
+
     candidates = []
     for index, (top_stroke, top_box) in enumerate(horizontal):
         top_y = (top_box[1] + top_box[3]) / 2
@@ -441,7 +455,7 @@ def recognize_sketch(document: DesignDocument, ocr: OCRCallable | None = None) -
                         result = None
             if result is not None:
                 text = str(getattr(result, "text", "") or "").strip()
-                ocr_confidence = getattr(result, "confidence", None)
+                ocr_confidence = _normalize_ocr_confidence(getattr(result, "confidence", None))
                 normal = " ".join(text.lower().replace("_", " ").split())
                 if any(term in normal for term in ("search", "find", "filter")) and ratio > 2.0:
                     element_type, confidence, alternatives = "search_field", 0.90, ["text_field", "button"]
@@ -493,7 +507,7 @@ def recognize_sketch(document: DesignDocument, ocr: OCRCallable | None = None) -
                 continue
             points = [p for s in group for p in s.points]
             xs, ys = [p[0] for p in points], [p[1] for p in points]
-            ocr_confidence = getattr(result, "confidence", None)
+            ocr_confidence = _normalize_ocr_confidence(getattr(result, "confidence", None))
             elements.append(UIElement(
                 "label", min(xs), min(ys), max(24, max(xs)-min(xs)), max(18, max(ys)-min(ys)),
                 text=text, confidence=_limit_confidence_with_ocr(0.84, ocr_confidence), alternatives=[], confirmed=False,

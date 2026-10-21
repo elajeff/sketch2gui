@@ -50,6 +50,33 @@ class ModelTests(unittest.TestCase):
         self.assertEqual((element.x, element.y, element.width, element.height),
                          (0.0, 0.0, 200.0, 240.0))
 
+    def test_project_rejects_duplicate_component_ids(self):
+        project = DesignDocument(elements=[
+            UIElement("button", 10, 10, 80, 30),
+            UIElement("label", 100, 10, 80, 30),
+        ]).to_dict()
+        project["elements"][1]["id"] = project["elements"][0]["id"]
+        with self.assertRaisesRegex(ValueError, "duplicate component IDs"):
+            DesignDocument.from_dict(project)
+
+        stroke_project = DesignDocument(strokes=[
+            Stroke([(10, 10), (20, 20)]), Stroke([(30, 30), (40, 40)]),
+        ]).to_dict()
+        stroke_project["strokes"][1]["id"] = stroke_project["strokes"][0]["id"]
+        with self.assertRaisesRegex(ValueError, "duplicate stroke IDs"):
+            DesignDocument.from_dict(stroke_project)
+
+    def test_project_rejects_oversized_point_collections(self):
+        project = {"format": "sketch2gui", "version": 1,
+                   "strokes": [{"points": [[1, 1]] * 25_001}], "elements": []}
+        with self.assertRaisesRegex(ValueError, "more than 25000 points"):
+            DesignDocument.from_dict(project)
+
+    def test_project_rejects_excessive_table_cell_dimensions(self):
+        with self.assertRaisesRegex(ValueError, "table cells cannot exceed 20 rows or columns"):
+            UIElement.from_dict({"type": "table", "table_rows": 1, "table_columns": 1,
+                                "table_cells": [["x"] * 21]})
+
     def test_project_rejects_stroke_points_outside_canvas(self):
         project = DesignDocument(strokes=[Stroke([(-1, 2), (3, 4)])]).to_dict()
         with self.assertRaisesRegex(ValueError, "within canvas bounds"):
@@ -83,6 +110,43 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(result[0].text, "Find users")
         self.assertEqual(result[0].element_id, previous.element_id)
         self.assertTrue(result[0].confirmed)
+
+    def test_manual_correction_survives_when_recognition_misses_its_strokes(self):
+        corrected = UIElement(
+            "search_field", 10, 20, 170, 40, text="Find users",
+            placeholder="Find users", confidence=1.0, confirmed=True,
+            user_modified=True, source_stroke_ids=["stroke-a", "stroke-b"],
+        )
+        unrelated = UIElement(
+            "line", 300, 50, 100, 8, source_stroke_ids=["stroke-c"],
+        )
+
+        result = preserve_manual_edits([corrected], [unrelated])
+
+        preserved = next(element for element in result if element.element_id == corrected.element_id)
+        self.assertEqual(preserved.element_type, "search_field")
+        self.assertEqual(preserved.text, "Find users")
+        self.assertEqual(preserved.source_stroke_ids, ["stroke-a", "stroke-b"])
+
+    def test_overlapping_drawing_tool_components_survive_interpretation(self):
+        first = UIElement(
+            "button", 20, 20, 120, 50, text="First",
+            confirmed=True, user_modified=True,
+        )
+        second = UIElement(
+            "text_field", 60, 35, 150, 45, placeholder="Second",
+            confirmed=True, user_modified=True,
+        )
+        detections = [
+            UIElement("panel", 18, 18, 125, 55, source_stroke_ids=["stroke-a"]),
+            UIElement("button", 65, 38, 140, 40, source_stroke_ids=["stroke-b"]),
+        ]
+
+        result = preserve_manual_edits([first, second], detections)
+
+        self.assertEqual({element.element_id for element in result}, {first.element_id, second.element_id})
+        self.assertEqual([element.text for element in result], ["First", ""])
+        self.assertEqual(result[1].placeholder, "Second")
 
     def test_drawing_tool_components_survive_interpretation(self):
         button = UIElement(

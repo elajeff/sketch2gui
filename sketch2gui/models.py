@@ -12,6 +12,11 @@ SUPPORTED_ELEMENT_TYPES = {
     "dropdown", "table", "panel", "radio_button", "line", "chart", "ellipse",
 }
 
+MAX_PROJECT_STROKES = 2_000
+MAX_PROJECT_ELEMENTS = 2_000
+MAX_STROKE_POINTS = 25_000
+MAX_PROJECT_POINTS = 250_000
+
 
 def new_id(prefix: str = "element") -> str:
     return f"{prefix}_{uuid4().hex[:8]}"
@@ -203,6 +208,8 @@ class UIElement:
             raise ValueError("Project table dimensions must be integers between 1 and 20") from exc
         if not 1 <= table_rows <= 20 or not 1 <= table_columns <= 20:
             raise ValueError("Project table dimensions must be between 1 and 20")
+        if len(table_cells_data) > 20 or any(len(row) > 20 for row in table_cells_data):
+            raise ValueError("Project table cells cannot exceed 20 rows or columns")
         if not isinstance(chart_values_data, list) or len(chart_values_data) > 100:
             raise ValueError("Project chart values must be an array containing at most 100 numbers")
         if not isinstance(alternatives, list):
@@ -223,49 +230,56 @@ class UIElement:
             ocr_confidence=(None if data.get("ocr_confidence") is None else float(data["ocr_confidence"])),
             chart_values=chart_values,
             table_rows=table_rows, table_columns=table_columns,
-            table_cells=[[str(value)[:500] for value in row] for row in table_cells_data],
+            table_cells=[[str(value)[:500] for value in row[:table_columns]]
+                          for row in table_cells_data[:table_rows]],
         )
 
 
 def preserve_manual_edits(previous: list[UIElement], detected: list[UIElement]) -> list[UIElement]:
-    """Keep user-touched components stable when the sketch is interpreted again.
-
-    Matching uses the IDs of the original mouse strokes, not approximate geometry.
-    Newly drawn/replaced strokes therefore get freshly recognized components.
-    """
+    """Retain manual edits while replacing only the recognition results."""
     saved = {
         frozenset(element.source_stroke_ids): element
         for element in previous
         if element.user_modified and element.source_stroke_ids
     }
+    manual_elements = [
+        element for element in previous
+        if element.user_modified and not element.source_stroke_ids
+    ]
+
+    def overlaps_manual(candidate: UIElement, manual: UIElement) -> bool:
+        intersection = (
+            max(0.0, min(manual.x + manual.width, candidate.x + candidate.width)
+                - max(manual.x, candidate.x))
+            * max(0.0, min(manual.y + manual.height, candidate.y + candidate.height)
+                  - max(manual.y, candidate.y))
+        )
+        smaller_area = min(manual.width * manual.height, candidate.width * candidate.height)
+        larger_area = max(manual.width * manual.height, candidate.width * candidate.height)
+        return (
+            smaller_area > 0 and larger_area > 0
+            and smaller_area / larger_area >= 0.50
+            and intersection / smaller_area >= 0.72
+        )
+
+    # Suppress only fresh detections; never filter preserved user elements.
+    candidates = [
+        candidate for candidate in detected
+        if not any(overlaps_manual(candidate, manual) for manual in manual_elements)
+    ]
     result: list[UIElement] = []
-    for element in detected:
-        old = saved.get(frozenset(element.source_stroke_ids)) if element.source_stroke_ids else None
-        result.append(copy.deepcopy(old) if old is not None else element)
+    matched: set[frozenset[str]] = set()
+    for candidate in candidates:
+        source_ids = frozenset(candidate.source_stroke_ids)
+        if source_ids and source_ids in saved:
+            result.append(copy.deepcopy(saved[source_ids]))
+            matched.add(source_ids)
+        else:
+            result.append(candidate)
 
-    # Components created with the drawing tools have no source-stroke IDs.
-    # Keep these explicit user choices when the user later interprets freehand art.
-    for manual in previous:
-        if not (manual.user_modified and not manual.source_stroke_ids):
-            continue
-        mx1, my1 = manual.x, manual.y
-        mx2, my2 = mx1 + manual.width, my1 + manual.height
-        survivors = []
-        for candidate in result:
-            cx1, cy1 = candidate.x, candidate.y
-            cx2, cy2 = cx1 + candidate.width, cy1 + candidate.height
-            intersection = max(0.0, min(mx2, cx2) - max(mx1, cx1)) * max(0.0, min(my2, cy2) - max(my1, cy1))
-            smaller = min(manual.width * manual.height, candidate.width * candidate.height)
-            larger = max(manual.width * manual.height, candidate.width * candidate.height)
-            area_similarity = smaller / larger if larger > 0 else 0.0
-            if smaller > 0 and area_similarity >= 0.50 and intersection / smaller >= 0.72:
-                continue
-            survivors.append(candidate)
-        result = survivors
-        result.append(copy.deepcopy(manual))
+    result.extend(copy.deepcopy(element) for key, element in saved.items() if key not in matched)
+    result.extend(copy.deepcopy(element) for element in manual_elements)
     return result
-
-
 @dataclass
 class DesignDocument:
     width: int = 800
@@ -298,8 +312,21 @@ class DesignDocument:
         elements_data = data.get("elements", [])
         if not isinstance(strokes_data, list) or not isinstance(elements_data, list):
             raise ValueError("Project strokes and elements must be JSON arrays")
+        if len(strokes_data) > MAX_PROJECT_STROKES:
+            raise ValueError(f"Project has more than {MAX_PROJECT_STROKES} strokes")
+        if len(elements_data) > MAX_PROJECT_ELEMENTS:
+            raise ValueError(f"Project has more than {MAX_PROJECT_ELEMENTS} components")
         if any(not isinstance(item, dict) for item in strokes_data + elements_data):
             raise ValueError("Each project stroke and element must be a JSON object")
+        total_points = 0
+        for stroke_data in strokes_data:
+            points = stroke_data.get("points", [])
+            if isinstance(points, list):
+                if len(points) > MAX_STROKE_POINTS:
+                    raise ValueError(f"A stroke has more than {MAX_STROKE_POINTS} points")
+                total_points += len(points)
+                if total_points > MAX_PROJECT_POINTS:
+                    raise ValueError(f"Project has more than {MAX_PROJECT_POINTS} stroke points")
         try:
             width = max(200, min(3000, int(canvas.get("width", 800))))
             height = max(200, min(3000, int(canvas.get("height", 600))))
@@ -321,6 +348,11 @@ class DesignDocument:
             element.height = min(element.height, float(height))
             element.x = min(max(0.0, element.x), float(width) - element.width)
             element.y = min(max(0.0, element.y), float(height) - element.height)
+
+        if len({stroke.stroke_id for stroke in strokes}) != len(strokes):
+            raise ValueError("Project contains duplicate stroke IDs")
+        if len({element.element_id for element in elements}) != len(elements):
+            raise ValueError("Project contains duplicate component IDs")
 
         return cls(
             width=width, height=height, name=str(data.get("name", "Untitled sketch")),

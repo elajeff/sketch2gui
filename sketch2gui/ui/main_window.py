@@ -7,7 +7,6 @@ import math
 import os
 import tempfile
 import time
-import traceback
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QObject, QRunnable, QThreadPool, Signal
@@ -21,12 +20,59 @@ from PySide6.QtWidgets import (
 from ..app_icon import load_app_icon
 from ..codegen import generate_python
 from ..geometry import recognize_sketch
-from ..models import DesignDocument, UIElement, Stroke, preserve_manual_edits, new_id, SUPPORTED_ELEMENT_TYPES
+from ..models import (
+    DesignDocument, UIElement, Stroke, preserve_manual_edits, new_id,
+    SUPPORTED_ELEMENT_TYPES, MAX_PROJECT_STROKES, MAX_PROJECT_ELEMENTS,
+    MAX_STROKE_POINTS, MAX_PROJECT_POINTS,
+)
 from ..ocr import load_backend
 from ..sample_images import render_strokes
 from .canvas import DrawingCanvas
 from .preview import PreviewSurface
 from .properties import PropertiesPanel
+
+
+MAX_PROJECT_FILE_BYTES = 16 * 1024 * 1024
+
+
+def _check_project_json_depth(value: str | bytes) -> None:
+    """Reject excessive JSON nesting before the JSON parser processes it."""
+    text = value.decode("utf-8") if isinstance(value, bytes) else value
+    depth = 0
+    in_string = False
+    escaped = False
+    for character in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+        elif character == '"':
+            in_string = True
+        elif character in "[{":
+            depth += 1
+            if depth > 100:
+                raise ValueError("Project JSON is nested too deeply (maximum 100 levels).")
+        elif character in "]}":
+            depth = max(0, depth - 1)
+
+def _read_project_file(path: Path) -> dict:
+    """Read a project with a size limit before parsing its JSON contents."""
+    try:
+        with path.open("rb") as source:
+            raw = source.read(MAX_PROJECT_FILE_BYTES + 1)
+        if len(raw) > MAX_PROJECT_FILE_BYTES:
+            raise ValueError(
+                f"Project file exceeds the {MAX_PROJECT_FILE_BYTES // (1024 * 1024)} MiB size limit"
+            )
+        _check_project_json_depth(raw.decode('utf-8'))
+        return json.loads(raw.decode("utf-8"))
+    except RecursionError as exc:
+        raise ValueError("Project JSON is nested too deeply to open safely") from exc
+    except UnicodeDecodeError as exc:
+        raise ValueError("Project file must be valid UTF-8 JSON") from exc
 
 
 def _atomic_write_text(target: Path, contents: str) -> None:
@@ -82,9 +128,11 @@ class InterpretWorker(QRunnable):
                 backend = load_backend(self.engine_name)
                 ocr_callable = backend.recognize
             result = recognize_sketch(self.document, ocr=ocr_callable)
+            if len(result) > MAX_PROJECT_ELEMENTS:
+                raise ValueError(f"Recognition produced more than {MAX_PROJECT_ELEMENTS} components")
             self.signals.finished.emit(result, None)
         except Exception as exc:
-            self.signals.finished.emit(None, f"{type(exc).__name__}: {exc}\n\n{traceback.format_exc()}")
+            self.signals.finished.emit(None, f"{type(exc).__name__}: {exc}")
 
 
 class MainWindow(QMainWindow):
@@ -102,6 +150,7 @@ class MainWindow(QMainWindow):
         self._history_limit = 60
         self._pending_before: str | None = None
         self._pending_elements: list[UIElement] = []
+        self._pending_engine: str | None = None
         self._current_file: Path | None = None
         self._busy = False
         self._pool = QThreadPool.globalInstance()
@@ -119,7 +168,7 @@ class MainWindow(QMainWindow):
         root_layout.setSpacing(8)
         toolbar = QHBoxLayout()
         self.interpret_button = QPushButton("Interpret sketch")
-        self.interpret_button.setStyleSheet("QPushButton { background:#2563EB; color:white; border:0; border-radius:5px; padding:8px 14px; font-weight:600; } QPushButton:hover { background:#1D4ED8; }")
+        self.interpret_button.setStyleSheet("QPushButton { background:#2563EB; color:white; border:0; border-radius:5px; padding:8px 14px; font-weight:600; } QPushButton:hover { background:#1D4ED8; } QPushButton:focus { border:2px solid #93C5FD; }")
         self.undo_button = QPushButton("Undo")
         self.redo_button = QPushButton("Redo")
         self.clear_button = QPushButton("Clear drawing")
@@ -161,8 +210,10 @@ class MainWindow(QMainWindow):
         canvas_layout.setContentsMargins(0, 0, 0, 0)
         canvas_layout.setSpacing(0)
         tool_row = QHBoxLayout()
-        tool_row.addWidget(QLabel("Tool:"))
+        tool_label = QLabel("Tool:")
         self.drawing_tool_combo = QComboBox()
+        tool_label.setBuddy(self.drawing_tool_combo)
+        tool_row.addWidget(tool_label)
         for label, key in (
             ("Freehand", "freehand"),
             ("Select", "select"),
@@ -325,13 +376,24 @@ class MainWindow(QMainWindow):
     def add_stroke(self, stroke: Stroke):
         if self._busy:
             return
+        existing_points = sum(len(item.points) for item in self.document.strokes)
+        if (
+            len(self.document.strokes) >= MAX_PROJECT_STROKES
+            or len(stroke.points) > MAX_STROKE_POINTS
+            or existing_points + len(stroke.points) > MAX_PROJECT_POINTS
+        ):
+            self.statusBar().showMessage(
+                "Sketch size limit reached. Save this design and continue in a new project.", 5000
+            )
+            return
         self._snapshot()
         self.document.strokes.append(stroke)
         self.canvas.set_document(self.document)
-        # Redraw the original ink without rebuilding controls in the preview.
         self.preview.update_strokes()
         self._refresh_code()
-        self.statusBar().showMessage(f"Captured stroke · {len(self.document.strokes)} total. Interpret when you're ready.", 2500)
+        self.statusBar().showMessage(
+            f"Captured stroke · {len(self.document.strokes)} total. Interpret when you're ready.", 2500
+        )
 
     def _refresh_selection_ui(self):
         valid_ids = {element.element_id for element in self.document.elements}
@@ -385,6 +447,9 @@ class MainWindow(QMainWindow):
         selected = [copy.deepcopy(e) for e in self.document.elements if e.element_id in self.selected_ids]
         if not selected:
             return
+        if len(self.document.elements) + len(selected) > MAX_PROJECT_ELEMENTS:
+            self.statusBar().showMessage("Duplicating these components would exceed the project component limit.", 4000)
+            return
         self._snapshot()
         created = []
         for element in selected:
@@ -407,28 +472,40 @@ class MainWindow(QMainWindow):
         if self._busy or len(self.selected_ids) < 2:
             self.statusBar().showMessage("Hold Shift and select at least two components, then choose Align.", 3000)
             return
-        chosen = [e for e in self.document.elements if e.element_id in self.selected_ids]
-        anchor = next((e for e in chosen if e.element_id == self.selected_id), chosen[0])
+
+        chosen = [element for element in self.document.elements if element.element_id in self.selected_ids]
+        if len(chosen) < 2:
+            return
+        anchor = next((element for element in chosen if element.element_id == self.selected_id), chosen[0])
         mode = str(self.align_combo.currentData())
-        self._snapshot()
+        changes = []
         for element in chosen:
             if element.element_id == anchor.element_id:
                 continue
+            x, y = element.x, element.y
             if mode == "left":
-                element.x = anchor.x
+                x = anchor.x
             elif mode == "center_x":
-                element.x = anchor.x + (anchor.width - element.width) / 2
+                x = anchor.x + (anchor.width - element.width) / 2
             elif mode == "right":
-                element.x = anchor.x + anchor.width - element.width
+                x = anchor.x + anchor.width - element.width
             elif mode == "top":
-                element.y = anchor.y
+                y = anchor.y
             elif mode == "center_y":
-                element.y = anchor.y + (anchor.height - element.height) / 2
+                y = anchor.y + (anchor.height - element.height) / 2
             elif mode == "bottom":
-                element.y = anchor.y + anchor.height - element.height
-            # Alignment takes precedence over snapping so aligned edges remain exact.
-            element.x = min(max(0.0, element.x), max(0.0, self.document.width-element.width))
-            element.y = min(max(0.0, element.y), max(0.0, self.document.height-element.height))
+                y = anchor.y + anchor.height - element.height
+            x = min(max(0.0, x), max(0.0, self.document.width - element.width))
+            y = min(max(0.0, y), max(0.0, self.document.height - element.height))
+            if (x, y) != (element.x, element.y):
+                changes.append((element, x, y))
+
+        if not changes:
+            return
+
+        self._snapshot()
+        for element, x, y in changes:
+            element.x, element.y = x, y
             element.user_modified = True
             element.confirmed = True
             element.confidence = 1.0
@@ -459,6 +536,9 @@ class MainWindow(QMainWindow):
     def add_created_element(self, element: UIElement):
         if self._busy:
             return
+        if len(self.document.elements) >= MAX_PROJECT_ELEMENTS:
+            self.statusBar().showMessage("Component limit reached for this project.", 4000)
+            return
         self._snapshot()
         self.document.elements.append(element)
         self.selected_id = element.element_id
@@ -483,51 +563,70 @@ class MainWindow(QMainWindow):
         if self._busy:
             return
         if not self.document.strokes:
-            QMessageBox.information(self, "Nothing to interpret", "Draw a few shapes or labels on the left canvas first.")
+            QMessageBox.information(
+                self, "Nothing to interpret", "Draw a few shapes or labels on the left canvas first."
+            )
             return
+
         engine = str(self.engine_combo.currentData())
-        if engine == "off":
-            self._snapshot()
-            result = recognize_sketch(copy.deepcopy(self.document))
-            self.document.elements = preserve_manual_edits(self.document.elements, result)
-            self.selected_id = None
-            self.selected_ids.clear()
-            self._refresh_all()
-            self.statusBar().showMessage(f"Interpreted sketch · {len(result)} candidate components.", 4000)
-            return
         self._pending_before = self._serialize()
         self._pending_elements = copy.deepcopy(self.document.elements)
-        snapshot = copy.deepcopy(self.document)
-        self._set_recognition_busy(True)
-        self.statusBar().showMessage(
-            "Loading OCR model and interpreting sketch. First use may download model files…"
-        )
-        worker = InterpretWorker(snapshot, engine)
+        self._pending_engine = engine
+        worker = InterpretWorker(copy.deepcopy(self.document), engine)
         worker.signals.finished.connect(self._interpret_finished)
         self._worker = worker
+        self._set_recognition_busy(True)
+        if engine == "off":
+            self.statusBar().showMessage("Interpreting sketch geometry…")
+        else:
+            self.statusBar().showMessage(
+                "Loading OCR model and interpreting sketch. First use may download model files…"
+            )
         self._pool.start(worker)
 
     def _interpret_finished(self, result, error):
+        engine = self._pending_engine or "off"
         self._worker = None
+        self._pending_engine = None
         self._set_recognition_busy(False)
         if error:
             self._pending_elements = []
             self._pending_before = None
             self._refresh_all()
-            QMessageBox.warning(self, "OCR / recognition failed", error.split("\n\n", 1)[0] + "\n\nYou can switch OCR off and still use geometry recognition.")
+            suggestion = (
+                "Switch OCR off to try geometry-only recognition."
+                if engine != "off"
+                else "Your sketch is unchanged. You can try again with a simpler drawing."
+            )
+            QMessageBox.warning(self, "Sketch interpretation failed", f"{error}\n\n{suggestion}")
             self.statusBar().showMessage("Recognition failed; your sketch has been kept.", 5000)
+            return
+
+        merged_elements = preserve_manual_edits(self._pending_elements, result)
+        if len(merged_elements) > MAX_PROJECT_ELEMENTS:
+            self._pending_before = None
+            self._pending_elements = []
+            self._refresh_all()
+            QMessageBox.warning(
+                self, "Too many components",
+                "This interpretation would exceed the project component limit. "
+                "Your previous components and original sketch have been kept.",
+            )
             return
         if self._pending_before:
             self._undo_stack.append(self._pending_before)
             self._undo_stack = self._undo_stack[-self._history_limit:]
             self._redo_stack.clear()
-        self.document.elements = preserve_manual_edits(self._pending_elements, result)
+        self.document.elements = merged_elements
+        self._pending_before = None
         self._pending_elements = []
         self.selected_id = None
         self.selected_ids.clear()
         self._refresh_all()
         count = sum(element.needs_review for element in self.document.elements)
-        self.statusBar().showMessage(f"Interpreted sketch · {len(result)} components, {count} to review.", 5000)
+        self.statusBar().showMessage(
+            f"Interpreted sketch · {len(self.document.elements)} components, {count} to review.", 5000
+        )
 
     def update_preview_text(self, element_id: str, value: str):
         element = next((item for item in self.document.elements if item.element_id == element_id), None)
@@ -730,9 +829,8 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            data = json.loads(Path(path).read_text(encoding="utf-8"))
-            new_document = DesignDocument.from_dict(data)
-        except (OSError, ValueError, TypeError, OverflowError) as exc:
+            new_document = DesignDocument.from_dict(_read_project_file(Path(path)))
+        except (OSError, ValueError, TypeError, OverflowError, RecursionError) as exc:
             QMessageBox.critical(self, "Could not open project", str(exc))
             return
         self._snapshot()

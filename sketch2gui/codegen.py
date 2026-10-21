@@ -41,21 +41,47 @@ def generate_python(document: DesignDocument, class_name: str = "GeneratedWindow
     """Generate a standalone PySide6 QWidget program using absolute coordinates."""
     class_name = _safe_identifier(class_name, "GeneratedWindow")
     class_name = "".join(part[:1].upper() + part[1:] for part in class_name.split("_")) or "GeneratedWindow"
-    stroke_assignment = _format_stroke_assignment(document.strokes)
-    imports = [
-        "import sys",
-        "from PySide6.QtCore import Qt, QPointF",
-        "from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen",
-        "from PySide6.QtWidgets import (",
-        "    QApplication, QWidget, QPushButton, QLineEdit, QLabel,",
-        "    QCheckBox, QComboBox, QTableWidget, QTableWidgetItem,",
-        "    QFrame, QRadioButton,",
-        ")",
-        "",
-        "",
-    ]
-    if any(element.element_type == "chart" for element in document.elements):
-        imports.extend([
+    element_types = {element.element_type for element in document.elements}
+    has_strokes = bool(document.strokes)
+    has_chart = "chart" in element_types
+    has_ellipse = "ellipse" in element_types
+    needs_qt = has_strokes or has_chart or has_ellipse
+
+    imports = ["import sys"]
+    if needs_qt:
+        core_names = (["QPointF"] if has_strokes else []) + ["Qt"]
+        imports.append(f"from PySide6.QtCore import {', '.join(core_names)}")
+    gui_names = ["QColor", "QPainter"]
+    if has_strokes:
+        gui_names.extend(("QPainterPath", "QPen"))
+    elif needs_qt:
+        gui_names.append("QPen")
+    imports.append(f"from PySide6.QtGui import {', '.join(gui_names)}")
+
+    widget_imports = ["QApplication", "QWidget"]
+    for element_type, names in (
+        ("button", ("QPushButton",)),
+        ("text_field", ("QLineEdit",)),
+        ("search_field", ("QLineEdit",)),
+        ("label", ("QLabel",)),
+        ("checkbox", ("QCheckBox",)),
+        ("dropdown", ("QComboBox",)),
+        ("table", ("QTableWidget", "QTableWidgetItem")),
+        ("panel", ("QFrame",)),
+        ("line", ("QFrame",)),
+        ("radio_button", ("QRadioButton",)),
+    ):
+        if element_type in element_types:
+            for name in names:
+                if name not in widget_imports:
+                    widget_imports.append(name)
+    if widget_imports:
+        imports.extend(["from PySide6.QtWidgets import (", *(f"    {name}," for name in widget_imports), ")"])
+    imports.extend(("", ""))
+
+    helper_classes: list[str] = []
+    if has_chart:
+        helper_classes.extend([
             "class ChartWidget(QWidget):",
             "    def __init__(self, values, parent=None):",
             "        super().__init__(parent)",
@@ -78,20 +104,26 @@ def generate_python(document: DesignDocument, class_name: str = "GeneratedWindow
             "            painter.setPen(QColor('#64748B'))",
             "            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, 'Add 2+ values in Properties')",
             "            return",
-            "        low, high = min(self.values), max(self.values)",
+            "        magnitude = max((abs(value) for value in self.values), default=0.0) or 1.0",
+            "        values = [value / magnitude for value in self.values]",
+            "        low, high = min(values), max(values)",
             "        span = high - low or 1.0",
-            "        points = [(left + (right-left)*index/(len(self.values)-1), bottom - (value-low)/span*(bottom-top)) for index, value in enumerate(self.values)]",
+            "        points = [",
+            "            (left + (right - left) * index / (len(values) - 1),",
+            "             bottom - (value - low) / span * (bottom - top))",
+            "            for index, value in enumerate(values)",
+            "        ]",
             "        painter.setPen(QPen(QColor('#2563EB'), 2.2))",
             "        for first, second in zip(points, points[1:]):",
             "            painter.drawLine(round(first[0]), round(first[1]), round(second[0]), round(second[1]))",
             "        painter.setBrush(QColor('#2563EB'))",
             "        for x, y in points:",
-            "            painter.drawEllipse(round(x)-2, round(y)-2, 4, 4)",
+            "            painter.drawEllipse(round(x) - 2, round(y) - 2, 4, 4)",
             "",
             "",
         ])
-    if any(element.element_type == "ellipse" for element in document.elements):
-        imports.extend([
+    if has_ellipse:
+        helper_classes.extend([
             "class EllipseWidget(QWidget):",
             "    def paintEvent(self, event):",
             "        painter = QPainter(self)",
@@ -102,34 +134,45 @@ def generate_python(document: DesignDocument, class_name: str = "GeneratedWindow
             "",
             "",
         ])
-    imports.extend([
+
+    ordered = sorted(
+        enumerate(document.elements),
+        key=lambda pair: (pair[1].element_type != "panel", pair[1].y, pair[1].x, pair[0]),
+    )
+    widget_initialization: list[str] = []
+    for index, (_, element) in enumerate(ordered, start=1):
+        widget_initialization.extend(_element_code(element, index))
+
+    class_lines = [
         f"class {class_name}(QWidget):",
         "    def __init__(self):",
         "        super().__init__()",
         f"        self.setWindowTitle({document.name!r})",
         f"        self.resize({document.width}, {document.height})",
         "        self.setMinimumSize(240, 180)",
-        *stroke_assignment,
+    ]
+    if has_strokes:
+        class_lines.extend(_format_stroke_assignment(document.strokes))
+    class_lines.extend(widget_initialization)
+    class_lines.extend([
         "",
         "    def paintEvent(self, event):",
         "        painter = QPainter(self)",
         "        painter.setRenderHint(QPainter.RenderHint.Antialiasing)",
         "        painter.fillRect(self.rect(), QColor('white'))",
-        "        for points, width in getattr(self, '_sketch_strokes', []):",
-        "            if len(points) < 2:",
-        "                continue",
-        "            path = QPainterPath(QPointF(*points[0]))",
-        "            for point in points[1:]:",
-        "                path.lineTo(QPointF(*point))",
-        "            painter.setPen(QPen(QColor('#202938'), width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))",
-        "            painter.drawPath(path)",
-        "",
-        "",
     ])
-    widgets = []
-    ordered = sorted(enumerate(document.elements), key=lambda pair: (pair[1].element_type != "panel", pair[1].y, pair[1].x, pair[0]))
-    for index, (_, element) in enumerate(ordered, start=1):
-        widgets.extend(_element_code(element, index))
+    if has_strokes:
+        class_lines.extend([
+            "        for points, width in self._sketch_strokes:",
+            "            if len(points) < 2:",
+            "                continue",
+            "            path = QPainterPath(QPointF(*points[0]))",
+            "            for point in points[1:]:",
+            "                path.lineTo(QPointF(*point))",
+            "            painter.setPen(QPen(QColor('#202938'), width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))",
+            "            painter.drawPath(path)",
+        ])
+
     tail = [
         "",
         "",
@@ -140,9 +183,7 @@ def generate_python(document: DesignDocument, class_name: str = "GeneratedWindow
         "    sys.exit(app.exec())",
         "",
     ]
-    return "\n".join(imports + widgets + tail)
-
-
+    return "\n".join(imports + helper_classes + class_lines + tail)
 def _element_code(element: UIElement, index: int) -> list[str]:
     x, y, w, h = [max(0, int(round(v))) for v in (element.x, element.y, element.width, element.height)]
     widget = f"widget_{index}"
