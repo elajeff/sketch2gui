@@ -14,7 +14,7 @@ Sketch2GUI is a Windows desktop tool for turning rough interface sketches into e
 
 The first-pass recognizer uses inspectable geometry rules for stroke closure, straightness, dimensions and relationships. A rectangle can represent a panel, button or input field, so automatic classification is inherently ambiguous; explicit drawing tools and manual correction are part of the intended workflow.
 
-OCR is a text-recognition aid, not full sketch understanding. An exploratory evaluation compared text-crop preprocessing variants, but the sample was small and not representative; the reported results should not be treated as estimates of general handwriting accuracy. The detailed evaluation notes describe the historical method and results. Confidence scores are model-specific review signals, not calibrated probabilities. Exported layouts use absolute coordinates and are not automatically responsive.
+OCR is a text-recognition aid, not full sketch understanding. Recognition quality depends on handwriting, image quality and preprocessing, so OCR output should be treated as a suggestion and reviewed when needed. Confidence scores are model-specific review signals, not calibrated probabilities. Exported layouts use absolute coordinates and are not automatically responsive.
 
 ## Getting started on Windows
 
