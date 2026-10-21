@@ -1,5 +1,5 @@
 import unittest
-from compare_ocr_results import sample_truths
+from tools.ocr.compare_ocr_results import sample_truths
 
 
 class CompareReportsTests(unittest.TestCase):

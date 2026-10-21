@@ -14,7 +14,7 @@ Sketch2GUI is a Windows desktop tool for turning rough interface sketches into e
 
 The first-pass recognizer uses inspectable geometry rules for stroke closure, straightness, dimensions and relationships. A rectangle can represent a panel, button or input field, so automatic classification is inherently ambiguous; explicit drawing tools and manual correction are part of the intended workflow.
 
-OCR is a text-recognition aid, not full sketch understanding. A historical trial of 19 short crops from two drawings achieved 21.1% exact word match with the selected preprocessing. That small, correlated sample is not a reliable estimate of general accuracy, and the original images were not recovered for a fresh evaluation. Confidence scores are model-specific review signals, not calibrated probabilities. Exported layouts use absolute coordinates and are not automatically responsive.
+OCR is a text-recognition aid, not full sketch understanding. An exploratory evaluation compared text-crop preprocessing variants, but the sample was small and not representative; the reported results should not be treated as estimates of general handwriting accuracy. The detailed evaluation notes describe the historical method and results. Confidence scores are model-specific review signals, not calibrated probabilities. Exported layouts use absolute coordinates and are not automatically responsive.
 
 ## Getting started on Windows
 
@@ -29,7 +29,7 @@ py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m sketch2gui
 ```
 
-Select **PaddleOCR · English** and choose **Interpret sketch** to use OCR. The first model download requires an internet connection. Select **OCR off (geometry only)** for geometry-only interpretation. An experimental TrOCR adapter is available for development with the additional dependencies in `requirements-ocr-trocr.txt`; it is not part of the standard Windows bundle. See [`docs/ocr-evaluation.md`](docs/ocr-evaluation.md) for the historical experiment and benchmark commands.
+Select **PaddleOCR · English** and choose **Interpret sketch** to use OCR. The first model download requires an internet connection. Select **OCR off (geometry only)** for geometry-only interpretation. An experimental TrOCR adapter is available for development with the additional dependencies in `requirements-ocr-trocr.txt`; it is not part of the standard Windows bundle. See [`docs/ocr-evaluation.md`](docs/ocr-evaluation.md) for the evaluation method and results, and [`tools/ocr/README.md`](tools/ocr/README.md) for the OCR experiment utilities.
 
 ## Development and release
 
@@ -54,8 +54,8 @@ Before distributing a release, launch the packaged executable on Windows and per
 ```text
 sketch2gui/       Application, shared model, geometry recognition, OCR adapters and UI
 tests/            Unit and GUI regression tests
-docs/             OCR experiment notes and benchmark instructions
-benchmark_ocr.py  Labeled-sample OCR benchmark runner
+tools/ocr/        OCR sample preparation, benchmarking and comparison utilities
+docs/             OCR evaluation notes
 run.bat           Source setup and launcher
 build_windows.bat Windows folder build
 release_windows.ps1 Build, package and checksum the release

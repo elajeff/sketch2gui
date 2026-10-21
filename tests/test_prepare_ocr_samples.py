@@ -1,5 +1,5 @@
 import unittest
-from prepare_ocr_samples import map_display_rect_to_image, safe_stem
+from tools.ocr.prepare_ocr_samples import map_display_rect_to_image, safe_stem
 
 
 class OCRCropHelperTests(unittest.TestCase):

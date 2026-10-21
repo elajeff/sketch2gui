@@ -3,7 +3,7 @@ $projectRoot = $PSScriptRoot
 $buildScript = Join-Path $projectRoot "build_windows.bat"
 
 if (-not (Test-Path -LiteralPath $buildScript -PathType Leaf)) {
-    throw "build_windows.bat is missing. Reapply the Sketch2GUI OCR/icon update."
+    throw "Required build script not found: '$buildScript'. Restore 'build_windows.bat' to the project root '$projectRoot' and try again."
 }
 
 Push-Location $projectRoot

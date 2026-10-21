@@ -30,7 +30,7 @@ if errorlevel 1 goto :failed
 if errorlevel 1 goto :failed
 
 echo [2/5] Checking Python syntax...
-"%PYTHON%" -m compileall -q sketch2gui tests
+"%PYTHON%" -m compileall -q sketch2gui tests tools
 if errorlevel 1 goto :failed
 
 echo [3/5] Running the complete test suite...

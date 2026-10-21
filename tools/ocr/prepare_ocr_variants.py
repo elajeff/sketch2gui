@@ -1,7 +1,7 @@
 """Create comparable OCR preprocessing variants without modifying labeled originals.
 
 Usage:
-    python prepare_ocr_variants.py --samples benchmark/line_samples --output benchmark/preprocessed
+    python tools/ocr/prepare_ocr_variants.py --samples benchmark/line_samples --output benchmark/preprocessed
 
 Creates output/{tight_pad,thicker_ink,binary}/ with PNGs and matching TXT labels.
 """
@@ -97,7 +97,7 @@ def main() -> int:
     print("\nCreated variants:")
     for name in VARIANTS:
         print(f"  {args.output / name}: {len(samples)} PNG/TXT pairs")
-    print("Run benchmark_ocr.py on each variant folder; compare to the original baseline.")
+    print("Run tools/ocr/benchmark_ocr.py on each variant folder; compare to the original baseline.")
     return 0
 
 
