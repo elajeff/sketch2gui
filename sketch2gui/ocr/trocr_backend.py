@@ -31,7 +31,8 @@ class TrOCRBackend:
         if isinstance(image, Image.Image):
             pil_image = image.convert("RGB")
         else:
-            pil_image = Image.open(image).convert("RGB")
+            with Image.open(image) as opened:
+                pil_image = opened.convert("RGB")
         inputs = self._processor(images=pil_image, return_tensors="pt")
         with self._torch.inference_mode():
             generated = self._model.generate(**inputs, max_new_tokens=96)

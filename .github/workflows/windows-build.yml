@@ -1,0 +1,38 @@
+name: Windows tests and package
+
+on:
+  push:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-package:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          architecture: x64
+      - name: Create project virtual environment
+        shell: pwsh
+        run: python -m venv .venv
+
+      - name: Test and build using the documented Windows script
+        shell: cmd
+        run: build_windows.bat
+      - name: Verify packaged executable exists
+        shell: pwsh
+        run: |
+          $exe = Join-Path $PWD "dist\Sketch2GUI\Sketch2GUI.exe"
+          if (-not (Test-Path $exe -PathType Leaf)) {
+            throw "Expected packaged executable was not created: $exe"
+          }
+          Get-Item $exe | Select-Object FullName, Length

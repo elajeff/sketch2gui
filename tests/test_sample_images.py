@@ -1,7 +1,5 @@
 import unittest
 
-from PIL import ImageChops
-
 from sketch2gui.models import Stroke
 from sketch2gui.sample_images import render_strokes
 
