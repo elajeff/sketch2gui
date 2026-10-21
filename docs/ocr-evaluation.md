@@ -27,24 +27,24 @@ Use real mouse-drawn text samples. Each image must have a same-stem `.txt` file 
 Run the selected PaddleOCR pipeline:
 
 ```powershell
-.\.venv\Scripts\python.exe .\benchmark_ocr.py --samples .\benchmark\samples --engines paddle --output .\benchmark\results-paddle
+.\.venv\Scripts\python.exe .\tools\ocr\benchmark_ocr.py --samples .\benchmark\samples --engines paddle --output .\benchmark\results-paddle
 ```
 
 TrOCR is an optional, larger alternative. Install its extra requirements before benchmarking it:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r .\requirements-ocr-trocr.txt
-.\.venv\Scripts\python.exe .\benchmark_ocr.py --samples .\benchmark\samples --engines paddle,trocr --output .\benchmark\results-compare
+.\.venv\Scripts\python.exe .\tools\ocr\benchmark_ocr.py --samples .\benchmark\samples --engines paddle,trocr --output .\benchmark\results-compare
 ```
 
 To compare preprocessing variants, generate separate variants from the original labeled set:
 
 ```powershell
-.\.venv\Scripts\python.exe .\prepare_ocr_variants.py --samples .\benchmark\samples --output .\benchmark\preprocessed
-.\.venv\Scripts\python.exe .\benchmark_ocr.py --samples .\benchmark\preprocessed\tight_pad --engines paddle --raw-paddle-input --output .\benchmark\results-paddle-variants\tight_pad
-.\.venv\Scripts\python.exe .\benchmark_ocr.py --samples .\benchmark\preprocessed\thicker_ink --engines paddle --raw-paddle-input --output .\benchmark\results-paddle-variants\thicker_ink
-.\.venv\Scripts\python.exe .\benchmark_ocr.py --samples .\benchmark\preprocessed\binary --engines paddle --raw-paddle-input --output .\benchmark\results-paddle-variants\binary
-.\.venv\Scripts\python.exe .\compare_ocr_variants.py --baseline .\benchmark\results-paddle\results.json --variants-root .\benchmark\results-paddle-variants
+.\.venv\Scripts\python.exe .\tools\ocr\prepare_ocr_variants.py --samples .\benchmark\samples --output .\benchmark\preprocessed
+.\.venv\Scripts\python.exe .\tools\ocr\benchmark_ocr.py --samples .\benchmark\preprocessed\tight_pad --engines paddle --raw-paddle-input --output .\benchmark\results-paddle-variants\tight_pad
+.\.venv\Scripts\python.exe .\tools\ocr\benchmark_ocr.py --samples .\benchmark\preprocessed\thicker_ink --engines paddle --raw-paddle-input --output .\benchmark\results-paddle-variants\thicker_ink
+.\.venv\Scripts\python.exe .\tools\ocr\benchmark_ocr.py --samples .\benchmark\preprocessed\binary --engines paddle --raw-paddle-input --output .\benchmark\results-paddle-variants\binary
+.\.venv\Scripts\python.exe .\tools\ocr\compare_ocr_variants.py --baseline .\benchmark\results-paddle\results.json --variants-root .\benchmark\results-paddle-variants
 ```
 
 Use `--raw-paddle-input` for already-preprocessed variants so the application preprocessor is not applied a second time. To compare the selected application path itself, omit that flag for the original crops. Benchmark output folders and local sample images are ignored by Git. Treat small differences as tentative and report the sample count with any results.

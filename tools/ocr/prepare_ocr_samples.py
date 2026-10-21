@@ -1,7 +1,7 @@
 """Crop text lines from a full Sketch2GUI canvas image for OCR evaluation.
 
 Usage:
-    python prepare_ocr_samples.py --image benchmark/samples/sample_123.png
+    python tools/ocr/prepare_ocr_samples.py --image benchmark/samples/sample_123.png
 
 Drag a rectangle around one text line/label, click "Save selected crop", then
 enter the exact text. Crops are saved with matching .txt files for benchmark_ocr.py.

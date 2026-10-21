@@ -1,7 +1,7 @@
 """Compare PaddleOCR preprocessing variants against an original baseline JSON.
 
 Usage:
-    python compare_ocr_variants.py --baseline benchmark/results-paddle/results.json --variants-root benchmark/results-paddle-variants
+    python tools/ocr/compare_ocr_variants.py --baseline benchmark/results-paddle/results.json --variants-root benchmark/results-paddle-variants
 
 The variants root should contain tight_pad/results.json, thicker_ink/results.json,
 and binary/results.json, each created by benchmark_ocr.py.
@@ -74,7 +74,7 @@ def main() -> int:
 
     if len(results) == 1:
         print("\nNo variant result files were found yet; run each variant benchmark first.")
-    print("\nTreat small differences as tentative on a 19-sample set.")
+    print("\nTreat small differences as tentative on this exploratory sample set.")
     return 0
 
 

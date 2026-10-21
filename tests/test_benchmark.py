@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from PIL import Image
-from benchmark_ocr import cer, edit_distance, discover_samples, normalized, raw_exact_match, normalized_exact_match
+from tools.ocr.benchmark_ocr import cer, edit_distance, discover_samples, normalized, raw_exact_match, normalized_exact_match
 
 
 class BenchmarkHelpersTests(unittest.TestCase):
