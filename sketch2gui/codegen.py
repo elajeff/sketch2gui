@@ -39,7 +39,16 @@ def generate_python(document: DesignDocument, class_name: str = "GeneratedWindow
     class_name = _safe_identifier(class_name, "GeneratedWindow")
     class_name = "".join(part[:1].upper() + part[1:] for part in class_name.split("_")) or "GeneratedWindow"
     element_types = {element.element_type for element in document.elements}
-    has_strokes = bool(document.strokes)
+    represented_ids = {
+        stroke_id
+        for element in document.elements
+        for stroke_id in element.source_stroke_ids
+    }
+    visible_strokes = [
+        stroke for stroke in document.strokes
+        if stroke.stroke_id not in represented_ids
+    ]
+    has_strokes = bool(visible_strokes)
     has_chart = "chart" in element_types
     has_ellipse = "ellipse" in element_types
     needs_qt = has_strokes or has_chart or has_ellipse
@@ -148,7 +157,7 @@ def generate_python(document: DesignDocument, class_name: str = "GeneratedWindow
         "        self.setMinimumSize(240, 180)",
     ]
     if has_strokes:
-        class_lines.extend(_format_stroke_assignment(document.strokes))
+        class_lines.extend(_format_stroke_assignment(visible_strokes))
     class_lines.extend(widget_initialization)
     class_lines.extend([
         "",

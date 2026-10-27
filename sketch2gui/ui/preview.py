@@ -85,8 +85,13 @@ class _StrokePreviewLayer(QWidget):
         painter.translate(offset_x, offset_y)
         painter.scale(scale, scale)
         painter.setClipRect(0, 0, document.width, document.height)
+        consumed_ids = {
+            stroke_id
+            for element in document.elements
+            for stroke_id in element.source_stroke_ids
+        }
         for stroke in document.strokes:
-            if len(stroke.points) < 2:
+            if stroke.stroke_id in consumed_ids or len(stroke.points) < 2:
                 continue
             path = QPainterPath(QPointF(*stroke.points[0]))
             for point in stroke.points[1:]:

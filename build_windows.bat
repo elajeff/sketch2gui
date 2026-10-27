@@ -49,6 +49,7 @@ if exist "%ROOT%\build\release-dist" rmdir /s /q "%ROOT%\build\release-dist"
   --collect-all paddle ^
   --collect-all paddleocr ^
   --collect-all paddlex ^
+  --additional-hooks-dir "%ROOT%\packaging\hooks" ^
   --hidden-import paddleocr ^
   --hidden-import paddlex ^
   "%ROOT%\launch_sketch2gui.py"

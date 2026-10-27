@@ -30,6 +30,26 @@ class CodeGenerationTests(unittest.TestCase):
         self.assertIn("QPainterPath", source)
         self.assertIn("(12.0, 18.0)", source)
 
+    def test_export_does_not_duplicate_recognized_strokes(self):
+        recognized = Stroke(
+            [(12, 18), (24, 35)], stroke_id="recognized"
+        )
+        remaining = Stroke(
+            [(90, 92), (115, 117)], stroke_id="remaining"
+        )
+        label = UIElement(
+            "label", 10, 10, 120, 30,
+            text="Hello",
+            source_stroke_ids=["recognized"],
+        )
+        source = generate_python(DesignDocument(
+            strokes=[recognized, remaining], elements=[label]
+        ))
+
+        self.assertNotIn("(12.0, 18.0)", source)
+        self.assertIn("(90.0, 92.0)", source)
+        self.assertIn("QLabel('Hello'", source)
+
     def test_generated_window_renders_freehand_strokes(self):
         app = QApplication.instance() or QApplication([])
         document = DesignDocument(
