@@ -811,6 +811,8 @@ class MainWindow(QMainWindow):
         self.document.name = target.stem
         try:
             contents = json.dumps(self.document.to_dict(), indent=2, ensure_ascii=False)
+            if len(contents.encode("utf-8")) > MAX_PROJECT_FILE_BYTES:
+                raise ValueError("Project exceeds the 16 MiB size limit. Reduce the design before saving.")
             _atomic_write_text(target, contents)
         except (OSError, TypeError, ValueError) as exc:
             self.document.name = previous_name
