@@ -51,6 +51,7 @@ class GeometryTests(unittest.TestCase):
         elements = recognize_sketch(DesignDocument(strokes=[outer, *dividers]))
         outer_element = max(elements, key=lambda e: e.width * e.height)
         self.assertEqual(outer_element.element_type, "table")
+        self.assertEqual((outer_element.table_rows, outer_element.table_columns), (2, 2))
 
     def test_multistroke_table_is_recognized_as_one_table(self):
         strokes = [
@@ -61,6 +62,7 @@ class GeometryTests(unittest.TestCase):
         elements = recognize_sketch(DesignDocument(strokes=strokes))
         tables = [element for element in elements if element.element_type == "table"]
         self.assertEqual(len(tables), 1)
+        self.assertEqual((tables[0].table_rows, tables[0].table_columns), (2, 2))
         self.assertEqual(len(tables[0].source_stroke_ids), 6)
         self.assertFalse(any(element.element_type == "line" for element in elements))
 

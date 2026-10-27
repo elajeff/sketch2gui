@@ -210,6 +210,7 @@ def _detect_multistroke_tables(strokes: list[Stroke]) -> tuple[list[UIElement], 
             element = UIElement(
                 "table", left, top_y, width, height,
                 confidence=0.84, alternatives=["panel"], confirmed=False,
+                table_rows=min(20, len(h_levels) - 1), table_columns=min(20, len(v_levels) - 1),
                 source_stroke_ids=[s.stroke_id for s in strokes if s.stroke_id in member_ids],
             )
             candidates.append((width * height, element, member_ids))
@@ -487,6 +488,8 @@ def recognize_sketch(document: DesignDocument, ocr: OCRCallable | None = None) -
             confidence=min(confidence, shape_conf + 0.12), alternatives=alternatives,
             confirmed=False, source_stroke_ids=[shape_stroke.stroke_id, *children_ids],
             ocr_confidence=ocr_confidence,
+            table_rows=min(20, len(rules) + 1) if element_type == "table" else 3,
+            table_columns=min(20, len(vertical_rules) + 1) if element_type == "table" else 3,
         ))
 
     # OCR may also find labels drawn outside any enclosing control.
@@ -516,9 +519,6 @@ def recognize_sketch(document: DesignDocument, ocr: OCRCallable | None = None) -
             ))
             recognized_text_ids.update(s.stroke_id for s in group)
         used_strokes.update(recognized_text_ids)
-        if recognized_text_ids:
-            # Don't display a recognized word's individual straight strokes as separate dividers.
-            elements = [e for e in elements if not (e.element_type == "line" and any(sid in recognized_text_ids for sid in e.source_stroke_ids))]
 
     # Keep standalone lines/circles so the user can still see and correct simple marks.
     for stroke, shape, confidence, bounds in shape_strokes:

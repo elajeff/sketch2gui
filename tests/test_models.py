@@ -111,6 +111,38 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(result[0].element_id, previous.element_id)
         self.assertTrue(result[0].confirmed)
 
+    def test_manual_correction_survives_an_added_stroke_without_duplication(self):
+        old = UIElement("button", 10, 20, 170, 40, text="Save", user_modified=True,
+                        source_stroke_ids=["box", "word"])
+        guess = UIElement("panel", 10, 20, 170, 40,
+                          source_stroke_ids=["box", "word", "extra"])
+        result = preserve_manual_edits([old], [guess])
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].element_id, old.element_id)
+        self.assertEqual(result[0].text, "Save")
+        self.assertEqual(result[0].source_stroke_ids, ["box", "word", "extra"])
+
+    def test_unrelated_subset_does_not_consume_manual_correction(self):
+        corrected = UIElement(
+            "button", 10, 20, 170, 40, text="Save",
+            user_modified=True, source_stroke_ids=["box", "word"],
+        )
+        unrelated = UIElement(
+            "line", 300, 50, 100, 8,
+            source_stroke_ids=["box"],
+        )
+        updated = UIElement(
+            "panel", 10, 20, 170, 40,
+            source_stroke_ids=["box", "word", "extra"],
+        )
+
+        result = preserve_manual_edits([corrected], [unrelated, updated])
+
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0].element_id, unrelated.element_id)
+        self.assertEqual(result[1].element_id, corrected.element_id)
+        self.assertEqual(result[1].source_stroke_ids, ["box", "word", "extra"])
+
     def test_manual_correction_survives_when_recognition_misses_its_strokes(self):
         corrected = UIElement(
             "search_field", 10, 20, 170, 40, text="Find users",
