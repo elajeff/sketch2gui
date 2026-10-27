@@ -420,16 +420,27 @@ class DrawingCanvas(QWidget):
                         painter.drawEllipse(int(px)-2, int(py)-2, 4, 4)
             elif element.element_type == "table":
                 painter.drawRect(int(x), int(y), int(w), int(h))
-                for col in (1, 2):
-                    painter.drawLine(int(x+w*col/3), int(y), int(x+w*col/3), int(y+h))
-                for row in (1, 2):
-                    painter.drawLine(int(x), int(y+h*row/3), int(x+w), int(y+h*row/3))
+                for col in range(1, element.table_columns):
+                    painter.drawLine(int(x+w*col/element.table_columns), int(y), int(x+w*col/element.table_columns), int(y+h))
+                for row in range(1, element.table_rows):
+                    painter.drawLine(int(x), int(y+h*row/element.table_rows), int(x+w), int(y+h*row/element.table_rows))
             elif element.element_type == "button":
                 painter.drawRoundedRect(int(x), int(y), int(w), int(h), 5, 5)
                 painter.drawText(int(x), int(y), int(w), int(h), Qt.AlignmentFlag.AlignCenter, element.text or "Button")
-            elif element.element_type == "text_field":
+            elif element.element_type in ("text_field", "search_field", "dropdown"):
                 painter.drawRoundedRect(int(x), int(y), int(w), int(h), 4, 4)
                 painter.drawText(int(x+8), int(y), max(0, int(w-16)), int(h), Qt.AlignmentFlag.AlignVCenter, element.placeholder or "Enter text...")
+                if element.element_type == "dropdown":
+                    painter.drawText(int(x+w-22), int(y), 18, int(h), Qt.AlignmentFlag.AlignVCenter, "▾")
+            elif element.element_type in ("checkbox", "radio_button"):
+                size = max(8, min(18, int(w), int(h)))
+                yy = int(y + (h - size) / 2)
+                if element.element_type == "checkbox":
+                    painter.drawRect(int(x), yy, size, size)
+                else:
+                    painter.drawEllipse(int(x), yy, size, size)
+                painter.drawText(int(x+size+6), int(y), max(0, int(w-size-6)), int(h),
+                                 Qt.AlignmentFlag.AlignVCenter, element.text)
             elif element.element_type == "panel":
                 painter.drawRect(int(x), int(y), int(w), int(h))
             elif element.element_type == "label":

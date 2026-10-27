@@ -277,11 +277,26 @@ def preserve_manual_edits(previous: list[UIElement], detected: list[UIElement]) 
     matched: set[frozenset[str]] = set()
     for candidate in candidates:
         source_ids = frozenset(candidate.source_stroke_ids)
-        if source_ids and source_ids in saved:
-            result.append(copy.deepcopy(saved[source_ids]))
-            matched.add(source_ids)
-        else:
+        if source_ids in matched:
+            continue
+        key = source_ids if source_ids in saved else next(
+            (
+                key for key, original in saved.items()
+                if key not in matched
+                and key < source_ids
+                and overlaps_manual(candidate, original)
+            ),
+            None,
+        )
+        if key is None:
             result.append(candidate)
+        else:
+            preserved = copy.deepcopy(saved[key])
+            preserved.source_stroke_ids = list(dict.fromkeys(
+                [*preserved.source_stroke_ids, *candidate.source_stroke_ids]
+            ))
+            result.append(preserved)
+            matched.add(key)
 
     result.extend(copy.deepcopy(element) for key, element in saved.items() if key not in matched)
     result.extend(copy.deepcopy(element) for element in manual_elements)
