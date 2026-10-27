@@ -150,6 +150,48 @@ class GeometryTests(unittest.TestCase):
         self.assertFalse(labels[0].needs_review)
         self.assertFalse(any(element.element_type == "line" for element in elements))
 
+    def test_ocr_separates_two_handwritten_lines(self):
+        strokes = [
+            Stroke([(30, 40), (34, 30), (38, 40)]),
+            Stroke([(42, 40), (42, 30), (47, 40)]),
+            Stroke([(52, 30), (52, 40)]),
+            Stroke([(30, 130), (34, 120), (38, 130)]),
+            Stroke([(42, 130), (42, 120), (47, 130)]),
+            Stroke([(52, 120), (52, 130)]),
+        ]
+        results = iter([
+            SimpleNamespace(text="Hello", confidence=0.98),
+            SimpleNamespace(text="HELLO", confidence=0.98),
+        ])
+
+        elements = recognize_sketch(DesignDocument(strokes=strokes), ocr=lambda image: next(results))
+        labels = [element for element in elements if element.element_type == "label"]
+
+        self.assertEqual([label.text for label in labels], ["Hello", "HELLO"])
+        self.assertEqual(len(labels), 2)
+        self.assertFalse(any(element.element_type == "line" for element in elements))
+
+    def test_round_letter_joins_word_but_distant_circle_remains(self):
+        strokes = [
+            Stroke([(30, 30), (35, 110)]),
+            Stroke([(60, 40), (60, 108)]),
+        ]
+        round_letter = ellipse(103, 100, 13, 13)
+        separate_circle = ellipse(260, 100, 15, 15)
+
+        elements = recognize_sketch(
+            DesignDocument(strokes=[*strokes, round_letter, separate_circle]),
+            ocr=lambda image: SimpleNamespace(text="Hello", confidence=0.95),
+        )
+
+        labels = [item for item in elements if item.element_type == "label"]
+        self.assertEqual(len(labels), 1)
+        self.assertIn(round_letter.stroke_id, labels[0].source_stroke_ids)
+
+        ellipses = [item for item in elements if item.element_type == "ellipse"]
+        self.assertEqual(len(ellipses), 1)
+        self.assertEqual(ellipses[0].source_stroke_ids, [separate_circle.stroke_id])
+
     def test_ocr_failure_keeps_geometry_suggestions_and_original_strokes(self):
         outer = rectangle(20, 20, 320, 80)
         lettering = Stroke([(45, 41), (49, 46), (53, 42), (57, 47), (62, 41)])

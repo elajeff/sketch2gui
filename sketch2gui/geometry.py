@@ -296,18 +296,38 @@ def _cluster_text_strokes(strokes: list[Stroke], excluded_ids: set[str]) -> list
     candidates.sort(key=lambda s: (stroke_bounds(s)[1], stroke_bounds(s)[0]))
     groups: list[list[Stroke]] = []
     group_bounds: list[list[float]] = []
+
     for stroke in candidates:
-        box = stroke_bounds(stroke)
-        x1, y1, x2, y2 = box
+        x1, y1, x2, y2 = stroke_bounds(stroke)
+        stroke_height = max(1.0, y2 - y1)
+        stroke_center_y = (y1 + y2) / 2.0
+
         matched = None
+        best_key = None
+
         for i, group_box in enumerate(group_bounds):
             gx1, gy1, gx2, gy2 = group_box
-            height = max(y2 - y1, gy2 - gy1, 8)
+            group_height = max(1.0, gy2 - gy1)
+            group_center_y = (gy1 + gy2) / 2.0
+
+            line_height = max(8.0, min(stroke_height, group_height))
             vertical_gap = max(0.0, max(gy1, y1) - min(gy2, y2))
             horizontal_gap = max(0.0, max(gx1, x1) - min(gx2, x2))
-            if vertical_gap <= max(15, height * 0.75) and horizontal_gap <= max(30, height * 2.0):
+            center_delta = abs(group_center_y - stroke_center_y)
+
+            same_line = (
+                center_delta <= max(14.0, line_height * 0.9)
+                and vertical_gap <= max(6.0, line_height * 0.35)
+                and horizontal_gap <= max(30.0, line_height * 3.0)
+            )
+            if not same_line:
+                continue
+
+            key = (horizontal_gap, center_delta)
+            if best_key is None or key < best_key:
                 matched = i
-                break
+                best_key = key
+
         if matched is None:
             groups.append([stroke])
             group_bounds.append([x1, y1, x2, y2])
@@ -315,6 +335,50 @@ def _cluster_text_strokes(strokes: list[Stroke], excluded_ids: set[str]) -> list
             groups[matched].append(stroke)
             b = group_bounds[matched]
             b[0], b[1], b[2], b[3] = min(b[0], x1), min(b[1], y1), max(b[2], x2), max(b[3], y2)
+
+    # A small round letter may sit below taller handwritten strokes.
+    # Attach isolated ellipses only when close to an existing text group.
+    for index in range(len(groups) - 1, -1, -1):
+        if len(groups[index]) != 1:
+            continue
+
+        oval = groups[index][0]
+        classification = classify_stroke(oval)
+        if classification is None or classification[0] != "ellipse":
+            continue
+
+        x1, y1, x2, y2 = group_bounds[index]
+        oval_height = y2 - y1
+        best = None
+
+        for target, group in enumerate(groups):
+            if target == index or len(group) < 2:
+                continue
+
+            gx1, gy1, gx2, gy2 = group_bounds[target]
+            horizontal_gap = max(0.0, max(gx1, x1) - min(gx2, x2))
+            vertical_overlap = max(0.0, min(gy2, y2) - max(gy1, y1))
+
+            if (
+                horizontal_gap <= max(32.0, oval_height * 1.2)
+                and vertical_overlap >= oval_height * 0.5
+                and oval_height <= max(45.0, (gy2 - gy1) * 0.7)
+            ):
+                score = (horizontal_gap, abs((gy1 + gy2) - (y1 + y2)), target)
+                if best is None or score < best:
+                    best = score
+
+        if best is not None:
+            target = best[2]
+            groups[target].append(oval)
+            bounds = group_bounds[target]
+            bounds[:] = [
+                min(bounds[0], x1), min(bounds[1], y1),
+                max(bounds[2], x2), max(bounds[3], y2),
+            ]
+            del groups[index]
+            del group_bounds[index]
+
     # Do not treat one bare line as a word. Two or more pen strokes are a safer minimum.
     return [group for group in groups if len(group) >= 2]
 
