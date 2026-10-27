@@ -240,6 +240,21 @@ class MainWindowEditingTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "size limit"):
                     _read_project_file(project_path)
 
+    def test_oversized_save_preserves_existing_file_and_unsaved_design(self):
+        with tempfile.TemporaryDirectory() as folder:
+            project_path = Path(folder) / "existing.json"
+            project_path.write_text("original", encoding="utf-8")
+            previous_name = self.window.document.name
+            with patch("sketch2gui.ui.main_window.MAX_PROJECT_FILE_BYTES", 1), \
+                 patch("sketch2gui.ui.main_window.QFileDialog.getSaveFileName",
+                       return_value=(str(project_path), "")), \
+                 patch("sketch2gui.ui.main_window.QMessageBox.critical") as error:
+                self.assertFalse(self.window.save_project())
+            self.assertEqual(project_path.read_text(encoding="utf-8"), "original")
+            self.assertEqual(self.window.document.name, previous_name)
+            self.assertTrue(self.window._has_unsaved_changes())
+            error.assert_called_once()
+
     def test_deeply_nested_project_json_is_rejected_clearly(self):
         with tempfile.TemporaryDirectory() as folder:
             project_path = Path(folder) / "deeply-nested.json"
