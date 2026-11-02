@@ -6,7 +6,7 @@ Built with Python and PySide6 (Qt), with optional local OCR through PaddleOCR. T
 
 ![Sketch2GUI with a freehand sketch on the left, the interpreted preview with a search box, button and table in the middle, and the generated PySide6 code below it](docs/images/editor.png)
 
-The screenshot shows a freehand sketch interpreted with OCR off. The panel, the button and the 4 by 3 table were recognized from the strokes; the button's label was typed in the properties panel, and the search box was drawn with the Text field tool.
+The sketch was interpreted with OCR off. The search box was drawn with the Text field tool, and the button's label was typed in the properties panel.
 
 ## What it does
 
