@@ -225,7 +225,7 @@ class PreviewSurface(QWidget):
                     value = element.table_cells[row][column] if row < len(element.table_cells) and column < len(element.table_cells[row]) else ""
                     widget.setItem(row, column, QTableWidgetItem(value))
             widget.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked | QAbstractItemView.EditTrigger.EditKeyPressed | QAbstractItemView.EditTrigger.AnyKeyPressed)
-            widget.setStyleSheet("QTableWidget { gridline-color:#D7DDE5; background:white; }")
+            widget.setStyleSheet("QTableWidget { gridline-color:#D7DDE5; background:white; color:#1F2933; } QHeaderView::section { background:#F2F4F7; color:#344054; border:none; border-right:1px solid #D7DDE5; border-bottom:1px solid #D7DDE5; padding:2px 4px; }")
         elif t == "chart":
             widget = _ChartPreviewWidget(element.chart_values, self)
         elif t == "ellipse":
