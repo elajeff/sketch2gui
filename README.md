@@ -1,67 +1,74 @@
 # Sketch2GUI
 
-Sketch2GUI is a Windows desktop tool for turning rough interface sketches into editable GUI designs and standalone Python applications built with PySide6.
+Draw a rough interface with the mouse and get an editable layout and a runnable PySide6 app out of it.
 
-## Features
+Built with Python and PySide6 (Qt), with optional local OCR through PaddleOCR. The sketch canvas, the live preview, saved projects and the code generator all share one design model, so an edit in one place shows up everywhere straight away.
 
-- **One shared design model.** The canvas, interpreted preview, saved project and code generator use the same serializable model, keeping geometry and component edits synchronized. Original pen strokes remain available as artwork.
-- **Inspectable sketch recognition.** Deterministic geometry heuristics identify likely shapes and simple relationships. Uncertain results are flagged for review instead of presented as guaranteed classifications.
-- **Human-guided correction.** Draw components with an explicit type when geometry alone is ambiguous, or correct and edit recognized components afterward. Move, resize, duplicate, align and multi-select items on the canvas.
-- **Runnable code export.** Export a standalone PySide6 window containing real widgets, editable table data, configurable line charts and preserved freehand strokes.
-- **Optional local OCR.** PaddleOCR can recognize English text lines to provide extra evidence during interpretation. Once its model files are downloaded, inference runs locally; OCR is not a general-purpose model that understands an entire interface.
+![Sketch2GUI with a freehand sketch on the left, the interpreted preview with a search box, button and table in the middle, and the generated PySide6 code below it](docs/images/editor.png)
 
-## Recognition approach and limitations
+The screenshot shows a freehand sketch interpreted with OCR off. The panel, the button and the 4 by 3 table were recognized from the strokes; the button's label was typed in the properties panel, and the search box was drawn with the Text field tool.
 
-The first-pass recognizer uses inspectable geometry rules for stroke closure, straightness, dimensions and relationships. A rectangle can represent a panel, button or input field, so automatic classification is inherently ambiguous; explicit drawing tools and manual correction are part of the intended workflow.
+## What it does
 
-OCR is a text-recognition aid, not full sketch understanding. Recognition quality depends on handwriting, image quality and preprocessing, so OCR output should be treated as a suggestion and reviewed when needed. Confidence scores are model-specific review signals, not calibrated probabilities. Exported layouts use absolute coordinates and are not automatically responsive.
+- Turns freehand strokes into components: panels, buttons, text fields, tables, lines and ellipses. Guesses it isn't sure about are marked for review rather than shown as certain.
+- Optional OCR reads short English text written inside a shape (for example "Search" or "Email") and uses it to decide what the shape is.
+- Component tools for drawing a button, text field, label, table, chart and more directly, when you already know what you want.
+- Edit anything afterwards: change its type, label, placeholder, table cells or chart values, and move, resize, duplicate, align or multi-select it. Undo and redo work across edits.
+- Exports a standalone PySide6 window with real widgets, the table data, line charts and any freehand strokes kept as drawings.
+- Saves and opens projects as JSON.
 
-## Getting started on Windows
+## How recognition works
 
-Use 64-bit Python 3.13. Double-click `run.bat`; it creates `.venv` when needed, installs the core app and PaddleOCR dependencies, then launches Sketch2GUI. Initial setup can take several minutes because the OCR runtime is large. Model weights download separately on first OCR use and are cached for subsequent runs.
+A first pass uses plain geometry rules: whether a stroke is closed, how straight it is, its size and proportions, and what it contains. A box with ruled lines inside becomes a table, a wide empty box a text field, a box with writing inside a button. A rectangle can still mean several things, so the component tools and the properties panel are part of the normal workflow rather than a fallback.
 
-To install and run from PowerShell:
+OCR helps with the text inside shapes; it doesn't understand a whole interface. [docs/ocr-evaluation.md](docs/ocr-evaluation.md) compares the OCR setups that were tried and explains why PaddleOCR with binary preprocessing was chosen.
+
+## Running it
+
+You need Windows and 64-bit Python 3.13. Double-click `run.bat`: it creates `.venv`, installs the app and the PaddleOCR dependencies and starts it. The first setup can take a few minutes because the OCR runtime is large, and the OCR model downloads the first time you use it.
+
+Or from PowerShell:
 
 ```powershell
 py -3.13 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt -r requirements-ocr-paddle.txt
 .\.venv\Scripts\python.exe -m sketch2gui
 ```
 
-Select **PaddleOCR · English** and choose **Interpret sketch** to use OCR. The first model download requires an internet connection. Select **OCR off (geometry only)** for geometry-only interpretation. An experimental TrOCR adapter is available for development with the additional dependencies in `requirements-ocr-trocr.txt`; it is not part of the standard Windows bundle. See [`docs/ocr-evaluation.md`](docs/ocr-evaluation.md) for the evaluation method and results, and [`tools/ocr/README.md`](tools/ocr/README.md) for the OCR experiment utilities.
+Pick **PaddleOCR · English** or **OCR off (geometry only)** next to **Interpret sketch**. An experimental TrOCR adapter is available for development with `requirements-ocr-trocr.txt`; it isn't part of the Windows build.
 
-## Development and release
-
-Run the tests:
+## Tests
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-Build and package the OCR-enabled Windows distribution:
+The tests cover the geometry rules, the design model, code generation, OCR parsing and preprocessing, and the main window's editing workflows. The PaddleOCR adapter is tested against a stand-in model, so the tests need no OCR download.
+
+## Building the Windows app
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\release_windows.ps1
 ```
 
-The build uses PyInstaller to create `dist\Sketch2GUI`. The release script creates a ZIP and a SHA-256 checksum. Keep the full distribution together with `Sketch2GUI.exe`; English model weights are not bundled and download on first OCR use.
-
-Before distributing a release, launch the packaged executable on Windows and perform an actual OCR recognition. Passing unit tests or building the executable alone does not prove that model download and inference work on the target machine.
+This builds `dist\Sketch2GUI` with PyInstaller and packages it as a ZIP with a SHA-256 checksum. Keep the folder together with `Sketch2GUI.exe`; the OCR model isn't bundled and downloads on first use. GitHub Actions runs the tests and builds the app on Windows with `build_windows.bat`.
 
 ## Project layout
 
-```text
-sketch2gui/       Application, shared model, geometry recognition, OCR adapters and UI
-tests/            Unit and GUI regression tests
-tools/ocr/        OCR sample preparation, benchmarking and comparison utilities
-docs/             OCR evaluation notes
-run.bat           Source setup and launcher
-build_windows.bat Windows folder build
-release_windows.ps1 Build, package and checksum the release
-requirements*.txt Core, build and optional OCR dependencies
-```
+| Path | Contents |
+| --- | --- |
+| `sketch2gui/` | The app: design model, geometry recognition, code generator, OCR adapters and UI |
+| `tests/` | Unit and GUI tests |
+| `tools/ocr/` | Scripts for preparing OCR samples and comparing engines |
+| `docs/` | OCR evaluation notes |
+| `run.bat`, `build_windows.bat`, `release_windows.ps1` | Run from source, build, and package a release |
+
+## Limitations
+
+- Recognition is rule-based, so expect to correct some components; ambiguous boxes are flagged for review.
+- OCR results are suggestions. Its confidence scores come from the model and aren't calibrated probabilities.
+- Exported layouts use fixed positions and don't resize their contents with the window.
 
 ## License
 
-MIT. See [`LICENSE`](LICENSE).
+MIT. See [LICENSE](LICENSE).
