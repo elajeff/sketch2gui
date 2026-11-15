@@ -6,7 +6,7 @@ from PySide6.QtCore import Qt, Signal, QPointF
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QFont
 from PySide6.QtWidgets import QWidget
 
-from ..models import DesignDocument, Stroke, UIElement
+from ..models import DesignDocument, Stroke, UIElement, clamp
 
 
 DRAWING_FOOTER_HEIGHT = 28
@@ -239,22 +239,88 @@ class DrawingCanvas(QWidget):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
-        # Mouse release can be the only event carrying the final drag position.
-        if event.button() == Qt.MouseButton.LeftButton and self.drawing_enabled:
-            release_position = self._widget_to_document(event.position(), clamp=True)
-            if self._component_drag_id:
-                self._update_component_drag(release_position)
-            if self._shape_start is not None and self._drag_tool:
-                self._shape_end = release_position
-
-        # Qt may deliver a release at a new position without an intermediate move event.
-        if (
-            event.button() == Qt.MouseButton.LeftButton
-            and self.active_tool == "freehand"
-            and self._current_points
-            and event.position().y() < self._drawing_height()
-        ):
+        if event.button() == Qt.MouseButton.LeftButton:
+            # Mouse release can be the only event carrying the final drag position.
             release_point = self._widget_to_document(event.position(), clamp=True)
+            if self._component_drag_id:
+                self._finish_drag(release_point)
+            elif self._shape_start is not None and self._drag_tool:
+                self._finish_shape(release_point)
+            elif self._current_points:
+                self._finish_stroke(release_point, event.position().y() < self._drawing_height())
+            self.update()
+        super().mouseReleaseEvent(event)
+
+    def _finish_drag(self, release_point: tuple[float, float]) -> None:
+        if self.drawing_enabled:
+            self._update_component_drag(release_point)
+        element_id = self._component_drag_id
+        bounds = self._component_drag_current
+        moved = self._component_dragged
+        self._component_drag_id = None
+        self._component_drag_mode = None
+        self._component_drag_start = None
+        self._component_drag_bounds = None
+        self._component_drag_current = None
+        self._component_dragged = False
+        if moved and bounds:
+            x, y, width, height = bounds
+            if self.snap_enabled:
+                x, y, width, height = (self._snap_value(v) for v in (x, y, width, height))
+                width, height = max(8.0, width), max(8.0, height)
+            x = clamp(x, 0.0, max(0.0, self.document.width-width))
+            y = clamp(y, 0.0, max(0.0, self.document.height-height))
+            width = min(width, float(self.document.width)-x)
+            height = min(height, float(self.document.height)-y)
+            self.element_geometry_changed.emit(element_id, x, y, width, height)
+
+    def _finish_shape(self, release_point: tuple[float, float]) -> None:
+        if self.drawing_enabled:
+            self._shape_end = release_point
+        start = self._shape_start
+        end = self._shape_end or start
+        tool = self._drag_tool
+        self._shape_start = None
+        self._shape_end = None
+        self._drag_tool = None
+        if self.snap_enabled:
+            start = (self._snap_value(start[0]), self._snap_value(start[1]))
+            end = (self._snap_value(end[0]), self._snap_value(end[1]))
+        x, y = min(start[0], end[0]), min(start[1], end[1])
+        width, height = abs(end[0] - start[0]), abs(end[1] - start[1])
+        if tool == "line":
+            dx, dy = end[0] - start[0], end[1] - start[1]
+            if math.hypot(dx, dy) >= 18:
+                if abs(dx) >= abs(dy):
+                    line_x, line_y = min(start[0], end[0]), (start[1] + end[1]) / 2
+                    line_width, line_height = max(8.0, abs(dx)), 8.0
+                else:
+                    line_x, line_y = (start[0] + end[0]) / 2, min(start[1], end[1])
+                    line_width, line_height = 8.0, max(8.0, abs(dy))
+                self.element_added.emit(UIElement(
+                    "line", line_x, line_y, line_width, line_height,
+                    confidence=1.0, confirmed=True, user_modified=True,
+                ))
+            return
+
+        min_width, min_height = (50, 40) if tool in ("table", "chart") else (18, 16)
+        if width >= min_width and height >= min_height:
+            defaults = {
+                "button": {"text": "Button"},
+                "text_field": {"placeholder": "Enter text..."},
+                "label": {"text": "Label"},
+            }
+            element = UIElement(
+                tool, x, y, width, height,
+                text=defaults.get(tool, {}).get("text", ""),
+                placeholder=defaults.get(tool, {}).get("placeholder", ""),
+                confidence=1.0, confirmed=True, user_modified=True,
+            )
+            self.element_added.emit(element)
+
+    def _finish_stroke(self, release_point: tuple[float, float], on_drawing_area: bool) -> None:
+        # Qt may deliver a release at a new position without an intermediate move event.
+        if self.active_tool == "freehand" and on_drawing_area:
             last_x, last_y = self._current_points[-1]
             if math.hypot(release_point[0] - last_x, release_point[1] - last_y) >= 1.0:
                 self._current_points.append(release_point)
@@ -264,81 +330,9 @@ class DrawingCanvas(QWidget):
             self._dragged = self._dragged or (
                 math.hypot(release_point[0] - start_x, release_point[1] - start_y) >= 4.0
             )
-
-        if event.button() == Qt.MouseButton.LeftButton and self._component_drag_id:
-            element_id = self._component_drag_id
-            bounds = self._component_drag_current
-            moved = self._component_dragged
-            self._component_drag_id = None
-            self._component_drag_mode = None
-            self._component_drag_start = None
-            self._component_drag_bounds = None
-            self._component_drag_current = None
-            self._component_dragged = False
-            if moved and bounds:
-                x, y, width, height = bounds
-                if self.snap_enabled:
-                    x, y, width, height = (self._snap_value(v) for v in (x, y, width, height))
-                    width, height = max(8.0, width), max(8.0, height)
-                x = min(max(0.0, x), max(0.0, self.document.width-width))
-                y = min(max(0.0, y), max(0.0, self.document.height-height))
-                width = min(width, float(self.document.width)-x)
-                height = min(height, float(self.document.height)-y)
-                self.element_geometry_changed.emit(element_id, x, y, width, height)
-            self.update()
-            return super().mouseReleaseEvent(event)
-
-        if event.button() == Qt.MouseButton.LeftButton and self._shape_start is not None and self._drag_tool:
-            start = self._shape_start
-            end = self._shape_end or start
-            tool = self._drag_tool
-            self._shape_start = None
-            self._shape_end = None
-            self._drag_tool = None
-            if self.snap_enabled:
-                start = (self._snap_value(start[0]), self._snap_value(start[1]))
-                end = (self._snap_value(end[0]), self._snap_value(end[1]))
-            x, y = min(start[0], end[0]), min(start[1], end[1])
-            width, height = abs(end[0] - start[0]), abs(end[1] - start[1])
-            if tool == "line":
-                dx, dy = end[0] - start[0], end[1] - start[1]
-                if math.hypot(dx, dy) >= 18:
-                    if abs(dx) >= abs(dy):
-                        line_x, line_y = min(start[0], end[0]), (start[1] + end[1]) / 2
-                        line_width, line_height = max(8.0, abs(dx)), 8.0
-                    else:
-                        line_x, line_y = (start[0] + end[0]) / 2, min(start[1], end[1])
-                        line_width, line_height = 8.0, max(8.0, abs(dy))
-                    self.element_added.emit(UIElement(
-                        "line", line_x, line_y, line_width, line_height,
-                        confidence=1.0, confirmed=True, user_modified=True,
-                    ))
-                self.update()
-                return super().mouseReleaseEvent(event)
-
-            min_width, min_height = (50, 40) if tool in ("table", "chart") else (18, 16)
-            if width >= min_width and height >= min_height:
-                defaults = {
-                    "button": {"text": "Button"},
-                    "text_field": {"placeholder": "Enter text..."},
-                    "label": {"text": "Label"},
-                }
-                element = UIElement(
-                    tool, x, y, width, height,
-                    text=defaults.get(tool, {}).get("text", ""),
-                    placeholder=defaults.get(tool, {}).get("placeholder", ""),
-                    confidence=1.0, confirmed=True, user_modified=True,
-                )
-                self.element_added.emit(element)
-            self.update()
-            return super().mouseReleaseEvent(event)
-
-        if event.button() == Qt.MouseButton.LeftButton and self._current_points:
-            if len(self._current_points) >= 2 and self._dragged:
-                self.stroke_added.emit(Stroke(points=list(self._current_points)))
-            self._current_points = []
-            self.update()
-        super().mouseReleaseEvent(event)
+        if len(self._current_points) >= 2 and self._dragged:
+            self.stroke_added.emit(Stroke(points=list(self._current_points)))
+        self._current_points = []
 
     def paintEvent(self, event):
         painter = QPainter(self)

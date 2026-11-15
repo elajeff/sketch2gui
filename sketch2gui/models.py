@@ -24,6 +24,10 @@ def new_id(prefix: str = "element") -> str:
     return f"{prefix}_{uuid4().hex[:8]}"
 
 
+def clamp(value: float, low: float, high: float) -> float:
+    return min(max(low, value), high)
+
+
 @dataclass
 class Stroke:
     points: list[tuple[float, float]]
@@ -106,7 +110,7 @@ class UIElement:
             raise ValueError("Component geometry and confidence must be finite numbers")
         self.width = max(8.0, self.width)
         self.height = max(8.0, self.height)
-        self.confidence = max(0.0, min(1.0, confidence))
+        self.confidence = clamp(confidence, 0.0, 1.0)
         if self.ocr_confidence is not None:
             try:
                 ocr_confidence = float(self.ocr_confidence)
@@ -114,7 +118,7 @@ class UIElement:
                 raise ValueError("OCR confidence must be a finite number or None") from exc
             if not math.isfinite(ocr_confidence):
                 raise ValueError("OCR confidence must be a finite number or None")
-            self.ocr_confidence = max(0.0, min(1.0, ocr_confidence))
+            self.ocr_confidence = clamp(ocr_confidence, 0.0, 1.0)
         if not isinstance(self.chart_values, list) or len(self.chart_values) > 100:
             raise ValueError("Chart values must be a list containing at most 100 numbers")
         clean_values = []
@@ -309,6 +313,9 @@ class DesignDocument:
     elements: list[UIElement] = field(default_factory=list)
     name: str = "Untitled sketch"
 
+    def element(self, element_id: str | None) -> UIElement | None:
+        return next((element for element in self.elements if element.element_id == element_id), None)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "format": "sketch2gui", "version": 1, "name": self.name,
@@ -367,8 +374,8 @@ class DesignDocument:
         for element in elements:
             element.width = min(element.width, float(width))
             element.height = min(element.height, float(height))
-            element.x = min(max(0.0, element.x), float(width) - element.width)
-            element.y = min(max(0.0, element.y), float(height) - element.height)
+            element.x = clamp(element.x, 0.0, float(width) - element.width)
+            element.y = clamp(element.y, 0.0, float(height) - element.height)
 
         if len({stroke.stroke_id for stroke in strokes}) != len(strokes):
             raise ValueError("Project contains duplicate stroke IDs")
