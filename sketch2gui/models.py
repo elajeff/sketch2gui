@@ -241,6 +241,18 @@ class UIElement:
         )
 
 
+def overlap_ratio(a: UIElement, b: UIElement) -> float:
+    """Share of the smaller element's area that the two elements have in common."""
+    smaller_area = min(a.width * a.height, b.width * b.height)
+    if smaller_area <= 0:
+        return 0.0
+    intersection = (
+        max(0.0, min(a.x + a.width, b.x + b.width) - max(a.x, b.x))
+        * max(0.0, min(a.y + a.height, b.y + b.height) - max(a.y, b.y))
+    )
+    return intersection / smaller_area
+
+
 def preserve_manual_edits(previous: list[UIElement], detected: list[UIElement]) -> list[UIElement]:
     """Retain manual edits while replacing only the recognition results."""
     saved = {
@@ -254,18 +266,12 @@ def preserve_manual_edits(previous: list[UIElement], detected: list[UIElement]) 
     ]
 
     def overlaps_manual(candidate: UIElement, manual: UIElement) -> bool:
-        intersection = (
-            max(0.0, min(manual.x + manual.width, candidate.x + candidate.width)
-                - max(manual.x, candidate.x))
-            * max(0.0, min(manual.y + manual.height, candidate.y + candidate.height)
-                  - max(manual.y, candidate.y))
-        )
         smaller_area = min(manual.width * manual.height, candidate.width * candidate.height)
         larger_area = max(manual.width * manual.height, candidate.width * candidate.height)
         return (
-            smaller_area > 0 and larger_area > 0
+            larger_area > 0
             and smaller_area / larger_area >= 0.50
-            and intersection / smaller_area >= 0.72
+            and overlap_ratio(candidate, manual) >= 0.72
         )
 
     # Suppress only fresh detections; never filter preserved user elements.
