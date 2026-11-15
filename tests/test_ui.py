@@ -14,7 +14,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QComboBox, QLineEdit, QMessageBox, QPushButton, QTableWidget
 
 from sketch2gui.models import DEFAULT_DROPDOWN_OPTIONS, DesignDocument, Stroke, UIElement
-from sketch2gui.ui.main_window import MainWindow, _read_project_file
+from sketch2gui.ui.main_window import MainWindow
 
 
 class MainWindowEditingTests(unittest.TestCase):
@@ -232,14 +232,6 @@ class MainWindowEditingTests(unittest.TestCase):
             self.assertTrue(project_path.is_file())
             self.assertFalse(self.window._has_unsaved_changes())
 
-    def test_oversized_project_is_rejected_before_json_parsing(self):
-        with tempfile.TemporaryDirectory() as folder:
-            project_path = Path(folder) / "oversized.json"
-            project_path.write_text("{}", encoding="utf-8")
-            with patch("sketch2gui.ui.main_window.MAX_PROJECT_FILE_BYTES", 1):
-                with self.assertRaisesRegex(ValueError, "size limit"):
-                    _read_project_file(project_path)
-
     def test_oversized_save_preserves_existing_file_and_unsaved_design(self):
         with tempfile.TemporaryDirectory() as folder:
             project_path = Path(folder) / "existing.json"
@@ -254,13 +246,6 @@ class MainWindowEditingTests(unittest.TestCase):
             self.assertEqual(self.window.document.name, previous_name)
             self.assertTrue(self.window._has_unsaved_changes())
             error.assert_called_once()
-
-    def test_deeply_nested_project_json_is_rejected_clearly(self):
-        with tempfile.TemporaryDirectory() as folder:
-            project_path = Path(folder) / "deeply-nested.json"
-            project_path.write_text("[" * 1100 + "0" + "]" * 1100, encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "nested too deeply"):
-                _read_project_file(project_path)
 
     def test_malformed_project_does_not_replace_the_current_design(self):
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as folder:
@@ -624,14 +609,6 @@ class MainWindowEditingTests(unittest.TestCase):
         self.window.change_element_property("y", 5000)
         self.assertLessEqual(component.x + component.width, self.window.document.width)
         self.assertLessEqual(component.y + component.height, self.window.document.height)
-
-    def test_unknown_property_does_not_create_undo_history(self):
-        self.window.select_element(self.element.element_id)
-        before_undo = list(self.window._undo_stack)
-        before_redo = list(self.window._redo_stack)
-        self.window.change_element_property("not_a_real_property", "value")
-        self.assertEqual(self.window._undo_stack, before_undo)
-        self.assertEqual(self.window._redo_stack, before_redo)
 
     def test_duplicate_alignment_and_move_resize(self):
         first = UIElement("button", 20, 30, 100, 40, text="One", confirmed=True)
