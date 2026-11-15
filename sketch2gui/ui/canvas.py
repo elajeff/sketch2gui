@@ -73,9 +73,9 @@ class DrawingCanvas(QWidget):
         return round(value / 10.0) * 10.0 if self.snap_enabled else value
 
     def _widget_to_document(self, pos, *, clamp: bool = False) -> tuple[float, float]:
-        scale_x, scale_y, offset_x, offset_y = self._canvas_transform()
-        x = (float(pos.x()) - offset_x) / max(scale_x, 1e-9)
-        y = (float(pos.y()) - offset_y) / max(scale_y, 1e-9)
+        scale, offset_x, offset_y = self._canvas_transform()
+        x = (float(pos.x()) - offset_x) / max(scale, 1e-9)
+        y = (float(pos.y()) - offset_y) / max(scale, 1e-9)
         if clamp:
             x = min(float(self.document.width), max(0.0, x))
             y = min(float(self.document.height), max(0.0, y))
@@ -89,11 +89,15 @@ class DrawingCanvas(QWidget):
         """Height of the drawable region, leaving the instruction footer clear."""
         return max(1, self.height() - DRAWING_FOOTER_HEIGHT)
 
-    def _canvas_transform(self) -> tuple[float, float, float, float]:
-        """Map document coordinates to the full drawable area as it is resized."""
-        scale_x = self.width() / max(self.document.width, 1)
-        scale_y = self._drawing_height() / max(self.document.height, 1)
-        return scale_x, scale_y, 0.0, 0.0
+    def _canvas_transform(self) -> tuple[float, float, float]:
+        """Fit the page in the drawable area with one scale, as the preview does, and center it."""
+        scale = min(
+            self.width() / max(self.document.width, 1),
+            self._drawing_height() / max(self.document.height, 1),
+        )
+        offset_x = (self.width() - self.document.width * scale) / 2
+        offset_y = (self._drawing_height() - self.document.height * scale) / 2
+        return scale, offset_x, offset_y
 
     def _element_at(self, point: tuple[float, float]) -> UIElement | None:
         """Return the topmost component containing a document-space point."""
@@ -342,13 +346,14 @@ class DrawingCanvas(QWidget):
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor("#FFFFFF"))
+        painter.fillRect(self.rect(), QColor("#F7F8FA"))
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        scale_x, scale_y, offset_x, offset_y = self._canvas_transform()
+        scale, offset_x, offset_y = self._canvas_transform()
         painter.save()
         painter.translate(offset_x, offset_y)
-        painter.scale(scale_x, scale_y)
+        painter.scale(scale, scale)
         painter.setClipRect(0, 0, self.document.width, self.document.height)
+        painter.fillRect(0, 0, self.document.width, self.document.height, QColor("#FFFFFF"))
         grid_pen = QPen(QColor("#EEF1F5"), 1)
         painter.setPen(grid_pen)
         for x in range(0, self.document.width, 25):
