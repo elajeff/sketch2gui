@@ -5,7 +5,7 @@ import math
 from collections.abc import Callable
 from typing import Any
 
-from .models import DesignDocument, Stroke, UIElement
+from .models import DEFAULT_PLACEHOLDER, DesignDocument, Stroke, UIElement
 
 OCRCallable = Callable[[Any], Any]
 
@@ -546,7 +546,7 @@ def recognize_sketch(document: DesignDocument, ocr: OCRCallable | None = None) -
         children_ids = [s.stroke_id for s in contained]
         used_strokes.add(shape_stroke.stroke_id)
         used_strokes.update(children_ids)
-        placeholder = (text or "Search...") if element_type == "search_field" else ((text or "Enter text...") if element_type == "text_field" else "")
+        placeholder = (text or DEFAULT_PLACEHOLDER[element_type]) if element_type in DEFAULT_PLACEHOLDER else ""
         elements.append(UIElement(
             element_type, x1, y1, width, height, text=text, placeholder=placeholder,
             confidence=min(confidence, shape_conf + 0.12), alternatives=alternatives,

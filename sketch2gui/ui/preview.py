@@ -1,14 +1,40 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QObject, QEvent, Signal
+from PySide6.QtCore import Qt, QObject, QEvent, Signal, QPointF, QRectF
 from PySide6.QtGui import QColor, QPainter, QPen, QPainterPath
-from PySide6.QtCore import QPointF
 from PySide6.QtWidgets import (
     QWidget, QPushButton, QLineEdit, QLabel, QCheckBox, QComboBox, QTableWidget,
     QTableWidgetItem, QFrame, QRadioButton, QAbstractItemView,
 )
 
-from ..models import DEFAULT_DROPDOWN_OPTIONS, DesignDocument, UIElement
+from ..models import DEFAULT_DROPDOWN_OPTIONS, DEFAULT_PLACEHOLDER, DesignDocument, UIElement
+
+
+def paint_chart(painter: QPainter, rect: QRectF, values: list[float]) -> None:
+    """Draw the line chart shown on the canvas and in the preview."""
+    left, right = rect.left() + 8, max(rect.left() + 9, rect.right() - 8)
+    top, bottom = rect.top() + 8, max(rect.top() + 9, rect.bottom() - 8)
+    painter.setPen(QPen(QColor("#E2E8F0"), 1))
+    for level in (1, 2, 3):
+        y = top + (bottom - top) * level / 4
+        painter.drawLine(QPointF(left, y), QPointF(right, y))
+    painter.setPen(QPen(QColor("#64748B"), 1.2))
+    painter.drawLine(QPointF(left, top), QPointF(left, bottom))
+    painter.drawLine(QPointF(left, bottom), QPointF(right, bottom))
+    if len(values) < 2:
+        painter.setPen(QColor("#64748B"))
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "Add 2+ values in Properties")
+        return
+    low, high = min(values), max(values)
+    span = high - low or 1.0
+    points = [QPointF(left + (right - left) * index / (len(values) - 1),
+                      bottom - (value - low) / span * (bottom - top))
+              for index, value in enumerate(values)]
+    painter.setPen(QPen(QColor("#2563EB"), 2.2))
+    painter.drawPolyline(points)
+    painter.setBrush(QColor("#2563EB"))
+    for point in points:
+        painter.drawEllipse(point, 2, 2)
 
 
 class _ChartPreviewWidget(QWidget):
@@ -21,32 +47,7 @@ class _ChartPreviewWidget(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.fillRect(self.rect(), QColor("white"))
-        left, right = 8, max(9, self.width() - 8)
-        top, bottom = 8, max(9, self.height() - 8)
-        painter.setPen(QPen(QColor("#E2E8F0"), 1))
-        for level in (1, 2, 3):
-            y = top + (bottom - top) * level / 4
-            painter.drawLine(left, int(y), right, int(y))
-        painter.setPen(QPen(QColor("#64748B"), 1.2))
-        painter.drawLine(left, top, left, bottom)
-        painter.drawLine(left, bottom, right, bottom)
-        if len(self.values) < 2:
-            painter.setPen(QColor("#64748B"))
-            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Add 2+ values in Properties")
-            return
-        magnitude = max(abs(value) for value in self.values) or 1.0
-        values = [value / magnitude for value in self.values]
-        low, high = min(values), max(values)
-        span = high - low or 1.0
-        points = [(left + (right - left) * index / (len(values) - 1),
-                   bottom - (value - low) / span * (bottom - top))
-                  for index, value in enumerate(values)]
-        painter.setPen(QPen(QColor("#2563EB"), 2.2))
-        for first, second in zip(points, points[1:]):
-            painter.drawLine(round(first[0]), round(first[1]), round(second[0]), round(second[1]))
-        painter.setBrush(QColor("#2563EB"))
-        for x, y in points:
-            painter.drawEllipse(round(x)-2, round(y)-2, 4, 4)
+        paint_chart(painter, QRectF(self.rect()), self.values)
 
 
 class _EllipsePreviewWidget(QWidget):
@@ -152,8 +153,7 @@ class PreviewSurface(QWidget):
             widget.hide()
             widget.deleteLater()
         self._widgets.clear()
-        ordered = sorted(enumerate(document.elements), key=lambda pair: (pair[1].element_type != "panel", pair[1].y, pair[1].x, pair[0]))
-        for _, element in ordered:
+        for element in document.ordered_elements():
             widget = self._make_widget(element)
             widget.setProperty("element_id", element.element_id)
             widget.installEventFilter(self)
@@ -203,7 +203,7 @@ class PreviewSurface(QWidget):
         elif t in ("text_field", "search_field"):
             widget = QLineEdit(self)
             widget.setText(element.text)
-            widget.setPlaceholderText(element.placeholder or ("Search..." if t == "search_field" else "Enter text..."))
+            widget.setPlaceholderText(element.placeholder or DEFAULT_PLACEHOLDER[t])
             widget.setReadOnly(True)
             widget.editingFinished.connect(lambda current=widget: self._finish_inline_edit(current))
             widget.setStyleSheet("QLineEdit { border:1px solid #B8C1CF; border-radius:5px; padding:4px 8px; background:white; color:#172033; }")

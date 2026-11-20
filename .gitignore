@@ -23,6 +23,3 @@ benchmark/preprocessed*/
 .env
 .env.*
 !.env.example
-# Local edit backups created while applying source updates
-.sketch2gui-backups/
-*.backup-*

@@ -4,7 +4,7 @@ from __future__ import annotations
 import keyword
 import re
 
-from .models import DEFAULT_DROPDOWN_OPTIONS, DesignDocument, Stroke, UIElement
+from .models import DEFAULT_DROPDOWN_OPTIONS, DEFAULT_PLACEHOLDER, DesignDocument, Stroke, UIElement
 
 
 def _safe_identifier(value: str, fallback: str) -> str:
@@ -140,12 +140,8 @@ def generate_python(document: DesignDocument, class_name: str = "GeneratedWindow
             "",
         ])
 
-    ordered = sorted(
-        enumerate(document.elements),
-        key=lambda pair: (pair[1].element_type != "panel", pair[1].y, pair[1].x, pair[0]),
-    )
     widget_initialization: list[str] = []
-    for index, (_, element) in enumerate(ordered, start=1):
+    for index, element in enumerate(document.ordered_elements(), start=1):
         widget_initialization.extend(_element_code(element, index))
 
     class_lines = [
@@ -200,7 +196,7 @@ def _element_code(element: UIElement, index: int) -> list[str]:
         lines.append(f"        {widget} = QLineEdit(self)")
         if element.text:
             lines.append(f"        {widget}.setText({element.text!r})")
-        placeholder = element.placeholder or ("Search..." if t == "search_field" else "Enter text...")
+        placeholder = element.placeholder or DEFAULT_PLACEHOLDER[t]
         lines.append(f"        {widget}.setPlaceholderText({placeholder!r})")
     elif t == "label":
         lines.append(f"        {widget} = QLabel({element.text or 'Label'!r}, self)")

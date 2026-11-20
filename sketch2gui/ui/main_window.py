@@ -139,7 +139,6 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowIcon(load_app_icon())
-        self.setWindowTitle("Sketch2GUI")
         self.resize(1540, 930)
         self.setMinimumSize(1120, 720)
         self.document = DesignDocument()
@@ -175,6 +174,7 @@ class MainWindow(QMainWindow):
         self.redo_button = QPushButton("Redo")
         self.clear_button = QPushButton("Clear drawing")
         self.save_button = QPushButton("Save project")
+        self.save_as_button = QPushButton("Save as…")
         self.open_button = QPushButton("Open project")
         self.export_button = QPushButton("Export Python")
         self.delete_button = QPushButton("Delete component")
@@ -192,7 +192,7 @@ class MainWindow(QMainWindow):
         if _paddle_dependencies_available():
             self.engine_combo.setCurrentIndex(1)
         for widget in (self.interpret_button, self.undo_button, self.redo_button, self.clear_button,
-                       self.save_button, self.open_button, self.export_button, self.delete_button, self.sample_button, self.engine_combo):
+                       self.save_button, self.save_as_button, self.open_button, self.export_button, self.delete_button, self.sample_button, self.engine_combo):
             toolbar.addWidget(widget)
         toolbar.addStretch(1)
         self.review_button = QPushButton("0 to review")
@@ -281,6 +281,7 @@ class MainWindow(QMainWindow):
         self.redo_button.clicked.connect(self.redo)
         self.clear_button.clicked.connect(self.clear_drawing)
         self.save_button.clicked.connect(self.save_project)
+        self.save_as_button.clicked.connect(self.save_project_as)
         self.open_button.clicked.connect(self.open_project)
         self.export_button.clicked.connect(self.export_python)
         self.delete_button.clicked.connect(self.delete_selected_element)
@@ -323,6 +324,10 @@ class MainWindow(QMainWindow):
         save_action.setShortcut(QKeySequence.StandardKey.Save)
         save_action.triggered.connect(self.save_project)
         self.addAction(save_action)
+        save_as_action = QAction("Save project as", self)
+        save_as_action.setShortcut(QKeySequence.StandardKey.SaveAs)
+        save_as_action.triggered.connect(self.save_project_as)
+        self.addAction(save_as_action)
         open_action = QAction("Open project", self)
         open_action.setShortcut(QKeySequence.StandardKey.Open)
         open_action.triggered.connect(self.open_project)
@@ -337,6 +342,11 @@ class MainWindow(QMainWindow):
 
     def _has_unsaved_changes(self) -> bool:
         return self._saved_state is not None and self._serialize() != self._saved_state
+
+    def _update_title(self):
+        name = self._current_file.name if self._current_file else "Untitled"
+        self.setWindowTitle(f"{name}[*] - Sketch2GUI")
+        self.setWindowModified(self._has_unsaved_changes())
 
     def _confirm_save_changes(self, action: str) -> bool:
         """Ask before discarding edits; return False when the action is cancelled."""
@@ -797,13 +807,20 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Drawing cleared.", 2500)
 
     def save_project(self):
+        if self._current_file is None:
+            return self.save_project_as()
+        return self._write_project(self._current_file)
+
+    def save_project_as(self):
         default = str(self._current_file or (Path.home() / "Sketch2GUI-project.json"))
         path, _ = QFileDialog.getSaveFileName(self, "Save Sketch2GUI project", default, "Sketch2GUI project (*.json)")
         if not path:
             return False
         if not path.lower().endswith(".json"):
             path += ".json"
-        target = Path(path)
+        return self._write_project(Path(path))
+
+    def _write_project(self, target: Path) -> bool:
         previous_name = self.document.name
         self.document.name = target.stem
         try:
@@ -818,6 +835,7 @@ class MainWindow(QMainWindow):
         self._current_file = target
         self._refresh_code()
         self._saved_state = self._serialize()
+        self._update_title()
         self.statusBar().showMessage(f"Saved project to {target}", 4000)
         return True
 
@@ -834,7 +852,8 @@ class MainWindow(QMainWindow):
             return
         if not self._confirm_save_changes("opening another project"):
             return
-        self._snapshot()
+        self._undo_stack.clear()
+        self._redo_stack.clear()
         self.document = new_document
         self._saved_state = self._serialize()
         self._current_file = Path(path)
@@ -911,7 +930,8 @@ class MainWindow(QMainWindow):
 
 
     def _refresh_code(self):
-        """Preserve editor view state while generated source changes."""
+        """Update the title, then preserve editor view state while generated source changes."""
+        self._update_title()
         editor = self.code_editor
         generated = generate_python(self.document)
         if editor.toPlainText() == generated:
