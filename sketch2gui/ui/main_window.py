@@ -21,7 +21,7 @@ from ..app_icon import load_app_icon
 from ..codegen import generate_python
 from ..geometry import recognize_sketch
 from ..models import (
-    DesignDocument, UIElement, Stroke, preserve_manual_edits, new_id,
+    DesignDocument, UIElement, Stroke, preserve_manual_edits, new_id, clamp,
     SUPPORTED_ELEMENT_TYPES, MAX_PROJECT_STROKES, MAX_PROJECT_ELEMENTS,
     MAX_STROKE_POINTS, MAX_PROJECT_POINTS, MAX_CELL_CHARS,
 )
@@ -115,7 +115,6 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowIcon(load_app_icon())
-        self.setWindowTitle("Sketch2GUI")
         self.resize(1540, 930)
         self.setMinimumSize(1120, 720)
         self.document = DesignDocument()
@@ -151,6 +150,7 @@ class MainWindow(QMainWindow):
         self.redo_button = QPushButton("Redo")
         self.clear_button = QPushButton("Clear drawing")
         self.save_button = QPushButton("Save project")
+        self.save_as_button = QPushButton("Save as…")
         self.open_button = QPushButton("Open project")
         self.export_button = QPushButton("Export Python")
         self.delete_button = QPushButton("Delete component")
@@ -168,7 +168,7 @@ class MainWindow(QMainWindow):
         if _paddle_dependencies_available():
             self.engine_combo.setCurrentIndex(1)
         for widget in (self.interpret_button, self.undo_button, self.redo_button, self.clear_button,
-                       self.save_button, self.open_button, self.export_button, self.delete_button, self.sample_button, self.engine_combo):
+                       self.save_button, self.save_as_button, self.open_button, self.export_button, self.delete_button, self.sample_button, self.engine_combo):
             toolbar.addWidget(widget)
         toolbar.addStretch(1)
         self.review_button = QPushButton("0 to review")
@@ -257,6 +257,7 @@ class MainWindow(QMainWindow):
         self.redo_button.clicked.connect(self.redo)
         self.clear_button.clicked.connect(self.clear_drawing)
         self.save_button.clicked.connect(self.save_project)
+        self.save_as_button.clicked.connect(self.save_project_as)
         self.open_button.clicked.connect(self.open_project)
         self.export_button.clicked.connect(self.export_python)
         self.delete_button.clicked.connect(self.delete_selected_element)
@@ -299,6 +300,10 @@ class MainWindow(QMainWindow):
         save_action.setShortcut(QKeySequence.StandardKey.Save)
         save_action.triggered.connect(self.save_project)
         self.addAction(save_action)
+        save_as_action = QAction("Save project as", self)
+        save_as_action.setShortcut(QKeySequence.StandardKey.SaveAs)
+        save_as_action.triggered.connect(self.save_project_as)
+        self.addAction(save_as_action)
         open_action = QAction("Open project", self)
         open_action.setShortcut(QKeySequence.StandardKey.Open)
         open_action.triggered.connect(self.open_project)
@@ -313,6 +318,11 @@ class MainWindow(QMainWindow):
 
     def _has_unsaved_changes(self) -> bool:
         return self._saved_state is not None and self._serialize() != self._saved_state
+
+    def _update_title(self):
+        name = self._current_file.name if self._current_file else "Untitled"
+        self.setWindowTitle(f"{name}[*] - Sketch2GUI")
+        self.setWindowModified(self._has_unsaved_changes())
 
     def _confirm_save_changes(self, action: str) -> bool:
         """Ask before discarding edits; return False when the action is cancelled."""
@@ -390,7 +400,7 @@ class MainWindow(QMainWindow):
                 (element.element_id for element in self.document.elements if element.element_id in self.selected_ids),
                 None,
             )
-        primary = next((e for e in self.document.elements if e.element_id == self.selected_id), None)
+        primary = self.document.element(self.selected_id)
         self.canvas.set_selected_many(self.selected_ids, self.selected_id)
         self.preview.set_selected_many(self.selected_ids, self.selected_id)
         self.properties.set_element(primary)
@@ -401,7 +411,7 @@ class MainWindow(QMainWindow):
     def toggle_selected_element(self, element_id):
         if element_id is None:
             return
-        if not any(e.element_id == element_id for e in self.document.elements):
+        if self.document.element(element_id) is None:
             return
         if element_id in self.selected_ids:
             self.selected_ids.remove(element_id)
@@ -416,13 +426,13 @@ class MainWindow(QMainWindow):
         self._refresh_selection_ui()
 
     def commit_element_geometry(self, element_id: str, x: float, y: float, width: float, height: float):
-        element = next((e for e in self.document.elements if e.element_id == element_id), None)
+        element = self.document.element(element_id)
         if element is None or self._busy:
             return
-        width = min(max(8.0, float(width)), float(self.document.width))
-        height = min(max(8.0, float(height)), float(self.document.height))
-        x = min(max(0.0, float(x)), float(self.document.width) - width)
-        y = min(max(0.0, float(y)), float(self.document.height) - height)
+        width = clamp(float(width), 8.0, float(self.document.width))
+        height = clamp(float(height), 8.0, float(self.document.height))
+        x = clamp(float(x), 0.0, float(self.document.width) - width)
+        y = clamp(float(y), 0.0, float(self.document.height) - height)
         if (element.x, element.y, element.width, element.height) == (x, y, width, height):
             return
         self._snapshot()
@@ -482,8 +492,8 @@ class MainWindow(QMainWindow):
                 y = anchor.y + (anchor.height - element.height) / 2
             elif mode == "bottom":
                 y = anchor.y + anchor.height - element.height
-            x = min(max(0.0, x), max(0.0, self.document.width - element.width))
-            y = min(max(0.0, y), max(0.0, self.document.height - element.height))
+            x = clamp(x, 0.0, max(0.0, self.document.width - element.width))
+            y = clamp(y, 0.0, max(0.0, self.document.height - element.height))
             if (x, y) != (element.x, element.y):
                 changes.append((element, x, y))
 
@@ -498,7 +508,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Selected components aligned.", 2200)
 
     def update_table_cell(self, element_id: str, row: int, column: int, value: str):
-        element = next((e for e in self.document.elements if e.element_id == element_id), None)
+        element = self.document.element(element_id)
         if element is None or element.element_type != "table" or self._busy:
             return
         if not (0 <= row < element.table_rows and 0 <= column < element.table_columns):
@@ -610,7 +620,7 @@ class MainWindow(QMainWindow):
         )
 
     def update_preview_text(self, element_id: str, value: str):
-        element = next((item for item in self.document.elements if item.element_id == element_id), None)
+        element = self.document.element(element_id)
         if element is None or element.text == value or self._busy:
             return
         self._snapshot()
@@ -639,10 +649,7 @@ class MainWindow(QMainWindow):
         """Validate one property edit before recording it in undo history."""
         if self._busy:
             return
-        element = next(
-            (item for item in self.document.elements if item.element_id == self.selected_id),
-            None,
-        )
+        element = self.document.element(self.selected_id)
         if element is None:
             return
 
@@ -660,19 +667,19 @@ class MainWindow(QMainWindow):
                     return
                 canvas_width = float(self.document.width)
                 canvas_height = float(self.document.height)
-                width = min(max(8.0, float(element.width)), canvas_width)
-                height = min(max(8.0, float(element.height)), canvas_height)
-                x = min(max(0.0, float(element.x)), max(0.0, canvas_width - width))
-                y = min(max(0.0, float(element.y)), max(0.0, canvas_height - height))
+                width = clamp(float(element.width), 8.0, canvas_width)
+                height = clamp(float(element.height), 8.0, canvas_height)
+                x = clamp(float(element.x), 0.0, max(0.0, canvas_width - width))
+                y = clamp(float(element.y), 0.0, max(0.0, canvas_height - height))
 
                 if field == "x":
-                    x = min(max(0.0, requested), max(0.0, canvas_width - width))
+                    x = clamp(requested, 0.0, max(0.0, canvas_width - width))
                 elif field == "y":
-                    y = min(max(0.0, requested), max(0.0, canvas_height - height))
+                    y = clamp(requested, 0.0, max(0.0, canvas_height - height))
                 elif field == "width":
-                    width = min(max(8.0, requested), max(8.0, canvas_width - x))
+                    width = clamp(requested, 8.0, max(8.0, canvas_width - x))
                 else:
-                    height = min(max(8.0, requested), max(8.0, canvas_height - y))
+                    height = clamp(requested, 8.0, max(8.0, canvas_height - y))
                 new_bounds = (x, y, width, height)
                 old_bounds = (element.x, element.y, element.width, element.height)
                 if new_bounds == old_bounds:
@@ -765,13 +772,20 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Drawing cleared.", 2500)
 
     def save_project(self):
+        if self._current_file is None:
+            return self.save_project_as()
+        return self._write_project(self._current_file)
+
+    def save_project_as(self):
         default = str(self._current_file or (Path.home() / "Sketch2GUI-project.json"))
         path, _ = QFileDialog.getSaveFileName(self, "Save Sketch2GUI project", default, "Sketch2GUI project (*.json)")
         if not path:
             return False
         if not path.lower().endswith(".json"):
             path += ".json"
-        target = Path(path)
+        return self._write_project(Path(path))
+
+    def _write_project(self, target: Path) -> bool:
         previous_name = self.document.name
         self.document.name = target.stem
         try:
@@ -786,6 +800,7 @@ class MainWindow(QMainWindow):
         self._current_file = target
         self._refresh_code()
         self._saved_state = self._serialize()
+        self._update_title()
         self.statusBar().showMessage(f"Saved project to {target}", 4000)
         return True
 
@@ -802,7 +817,8 @@ class MainWindow(QMainWindow):
             return
         if not self._confirm_save_changes("opening another project"):
             return
-        self._snapshot()
+        self._undo_stack.clear()
+        self._redo_stack.clear()
         self.document = new_document
         self._saved_state = self._serialize()
         self._current_file = Path(path)
@@ -879,7 +895,8 @@ class MainWindow(QMainWindow):
 
 
     def _refresh_code(self):
-        """Preserve editor view state while generated source changes."""
+        """Update the title, then preserve editor view state while generated source changes."""
+        self._update_title()
         editor = self.code_editor
         generated = generate_python(self.document)
         if editor.toPlainText() == generated:

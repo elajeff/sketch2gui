@@ -13,10 +13,6 @@ import json
 from pathlib import Path
 
 
-def norm(text: str) -> str:
-    return " ".join(text.casefold().split())
-
-
 def load(path: Path) -> tuple[dict, dict, dict[str, dict]]:
     data = json.loads(path.read_text(encoding="utf-8"))
     details = data.get("engines", {}).get("paddle")

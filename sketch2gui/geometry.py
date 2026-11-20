@@ -5,9 +5,11 @@ import math
 from collections.abc import Callable
 from typing import Any
 
-from .models import DesignDocument, Stroke, UIElement
+from .models import DEFAULT_PLACEHOLDER, DesignDocument, Stroke, UIElement, overlap_ratio
 
 OCRCallable = Callable[[Any], Any]
+# Pairing every line with every other line becomes expensive on dense sketches.
+MAX_LINE_STROKES = 120
 
 
 def _limit_confidence_with_ocr(base_confidence: float, ocr_confidence: Any) -> float:
@@ -132,26 +134,42 @@ def _distinct_coordinates(values: list[float], tolerance: float) -> list[float]:
     return centers
 
 
+def _split_by_direction(strokes: list[Stroke], excluded_ids: set[str] = frozenset()) -> tuple[list, list]:
+    """Return the horizontal and vertical line strokes, each paired with its bounds."""
+    horizontal: list[tuple[Stroke, tuple[float, float, float, float]]] = []
+    vertical: list[tuple[Stroke, tuple[float, float, float, float]]] = []
+    for stroke in strokes:
+        if stroke.stroke_id in excluded_ids:
+            continue
+        kind = _axis_line_kind(stroke)
+        if kind == "horizontal":
+            horizontal.append((stroke, stroke_bounds(stroke)))
+        elif kind == "vertical":
+            vertical.append((stroke, stroke_bounds(stroke)))
+    return horizontal, vertical
+
+
+def _largest_without_overlap(candidates: list[tuple[UIElement, set[str]]], max_overlap: float) -> tuple[list[UIElement], set[str]]:
+    """Keep the largest candidates and drop any that mostly cover one already kept."""
+    candidates.sort(key=lambda candidate: candidate[0].width * candidate[0].height, reverse=True)
+    accepted: list[tuple[UIElement, set[str]]] = []
+    for element, ids in candidates:
+        if all(overlap_ratio(element, kept) < max_overlap for kept, _ in accepted):
+            accepted.append((element, ids))
+    return [element for element, _ in accepted], set().union(*(ids for _, ids in accepted))
+
+
 def _detect_multistroke_tables(strokes: list[Stroke]) -> tuple[list[UIElement], set[str]]:
     """Recognize a simple table drawn as separate horizontal/vertical strokes.
 
     Requires a rectangular pair of horizontal edges, matching vertical sides,
     and at least one internal row/column divider. This stays geometry-based.
     """
-    horizontal: list[tuple[Stroke, tuple[float, float, float, float]]] = []
-    vertical: list[tuple[Stroke, tuple[float, float, float, float]]] = []
-    for stroke in strokes:
-        kind = _axis_line_kind(stroke)
-        if kind == "horizontal":
-            horizontal.append((stroke, stroke_bounds(stroke)))
-        elif kind == "vertical":
-            vertical.append((stroke, stroke_bounds(stroke)))
-
-    # Pairing every rule with every other rule becomes expensive on dense sketches.
-    if len(horizontal) + len(vertical) > 120:
+    horizontal, vertical = _split_by_direction(strokes)
+    if len(horizontal) + len(vertical) > MAX_LINE_STROKES:
         return [], set()
 
-    candidates: list[tuple[float, UIElement, set[str]]] = []
+    candidates: list[tuple[UIElement, set[str]]] = []
     for i, (_first, a) in enumerate(horizontal):
         for _second, b in horizontal[i + 1:]:
             ya, yb = (a[1] + a[3]) / 2, (b[1] + b[3]) / 2
@@ -213,30 +231,10 @@ def _detect_multistroke_tables(strokes: list[Stroke]) -> tuple[list[UIElement], 
                 table_rows=len(h_levels) - 1, table_columns=len(v_levels) - 1,
                 source_stroke_ids=[s.stroke_id for s in strokes if s.stroke_id in member_ids],
             )
-            candidates.append((width * height, element, member_ids))
+            candidates.append((element, member_ids))
 
     # Prefer a whole table over smaller candidate grids formed by adjacent rows.
-    candidates.sort(key=lambda candidate: candidate[0], reverse=True)
-    accepted: list[tuple[float, UIElement, set[str]]] = []
-    for candidate in candidates:
-        _, element, _ = candidate
-        x1, y1 = element.x, element.y
-        x2, y2 = x1 + element.width, y1 + element.height
-        duplicate = False
-        for _, existing, _ in accepted:
-            ex1, ey1 = existing.x, existing.y
-            ex2, ey2 = ex1 + existing.width, ey1 + existing.height
-            intersection = max(0.0, min(x2, ex2) - max(x1, ex1)) * max(0.0, min(y2, ey2) - max(y1, ey1))
-            smaller_area = min(element.width * element.height, existing.width * existing.height)
-            if smaller_area > 0 and intersection / smaller_area >= 0.65:
-                duplicate = True
-                break
-        if not duplicate:
-            accepted.append(candidate)
-
-    elements = [element for _, element, _ in accepted]
-    used_ids = set().union(*(ids for _, _, ids in accepted)) if accepted else set()
-    return elements, used_ids
+    return _largest_without_overlap(candidates, 0.65)
 
 
 def _interior_image(strokes: list[Stroke], bounds: tuple[float, float, float, float], scale: float = 2.0):
@@ -385,18 +383,8 @@ def _cluster_text_strokes(strokes: list[Stroke], excluded_ids: set[str]) -> list
 
 def _detect_multistroke_rectangles(strokes: list[Stroke], excluded_ids: set[str]) -> tuple[list[UIElement], set[str]]:
     """Group four separate axis-aligned strokes into a low-confidence box candidate."""
-    horizontal = []
-    vertical = []
-    for stroke in strokes:
-        if stroke.stroke_id in excluded_ids:
-            continue
-        kind = _axis_line_kind(stroke)
-        if kind == "horizontal":
-            horizontal.append((stroke, stroke_bounds(stroke)))
-        elif kind == "vertical":
-            vertical.append((stroke, stroke_bounds(stroke)))
-
-    if len(horizontal) + len(vertical) > 120:
+    horizontal, vertical = _split_by_direction(strokes, excluded_ids)
+    if len(horizontal) + len(vertical) > MAX_LINE_STROKES:
         return [], set()
 
     candidates = []
@@ -443,26 +431,101 @@ def _detect_multistroke_rectangles(strokes: list[Stroke], excluded_ids: set[str]
             element = UIElement("panel", left, top_y2, width, bottom_y2-top_y2,
                                 confidence=0.56, alternatives=["button", "text_field"],
                                 confirmed=False, source_stroke_ids=[top_stroke.stroke_id, bottom_stroke.stroke_id, side_candidates[0][1].stroke_id, side_candidates[1][1].stroke_id])
-            candidates.append((width * height, element, ids))
+            candidates.append((element, ids))
 
-    candidates.sort(key=lambda candidate: candidate[0], reverse=True)
-    accepted = []
-    for candidate in candidates:
-        _, element, _ = candidate
-        x1, y1, x2, y2 = element.x, element.y, element.x + element.width, element.y + element.height
-        duplicate = False
-        for _, existing, _ in accepted:
-            ex1, ey1, ex2, ey2 = existing.x, existing.y, existing.x + existing.width, existing.y + existing.height
-            intersection = max(0.0, min(x2, ex2) - max(x1, ex1)) * max(0.0, min(y2, ey2) - max(y1, ey1))
-            smaller = min(element.width * element.height, existing.width * existing.height)
-            if smaller > 0 and intersection / smaller >= 0.82:
-                duplicate = True
-                break
-        if not duplicate:
-            accepted.append(candidate)
-    elements = [element for _, element, _ in accepted]
-    used = set().union(*(ids for _, _, ids in accepted)) if accepted else set()
-    return elements, used
+    return _largest_without_overlap(candidates, 0.82)
+
+
+def _run_ocr(ocr: OCRCallable, image) -> tuple[str, float | None] | None:
+    """Return the recognized text and confidence, or None when OCR fails."""
+    try:
+        result = ocr(image)
+    except Exception:
+        return None
+    if result is None:
+        return None
+    text = str(getattr(result, "text", "") or "").strip()
+    return text, _normalize_ocr_confidence(getattr(result, "confidence", None))
+
+
+def _classify_rectangle(bounds, has_nested: bool, contained: list[Stroke], rules: list[Stroke],
+                        vertical_rules: list[Stroke], ocr: OCRCallable | None):
+    """Guess what a drawn rectangle is from what was drawn inside it.
+
+    Returns the element type, confidence, alternatives, OCR text and OCR confidence.
+    """
+    x1, y1, x2, y2 = bounds
+    width, height = x2 - x1, y2 - y1
+    ratio = width / max(height, 1)
+    if has_nested:
+        return "panel", 0.86, ["panel", "button"], "", None
+    if len(rules) >= 2 or len(vertical_rules) >= 2 or (rules and vertical_rules):
+        return "table", 0.82, ["panel", "search_field"], "", None
+    if not contained:
+        if ratio > 3.8 and height <= 60:
+            return "text_field", 0.56, ["search_field", "button"], "", None
+        # Empty rectangles are commonly panels, but may be unfinished controls.
+        return "panel", 0.60, ["button", "text_field"], "", None
+
+    crop = _interior_image(contained, bounds) if ocr else None
+    read = _run_ocr(ocr, crop) if crop is not None else None
+    if read is None:
+        if ratio >= 3.4:
+            return "text_field", 0.59, ["search_field", "button"], "", None
+        return "button", 0.58, ["text_field", "panel"], "", None
+
+    text, ocr_confidence = read
+    normal = " ".join(text.lower().replace("_", " ").split())
+    if any(term in normal for term in ("search", "find", "filter")) and ratio > 2.0:
+        guess = "search_field", 0.90, ["text_field", "button"]
+    elif any(term in normal for term in ("email", "password", "username", "enter text")) and ratio > 2.0:
+        guess = "text_field", 0.86, ["search_field", "button"]
+    elif text:
+        guess = "button", 0.78, ["label", "text_field"]
+    else:
+        guess = "button", 0.58, ["text_field", "search_field"]
+    element_type, confidence, alternatives = guess
+    if text:
+        confidence = _limit_confidence_with_ocr(confidence, ocr_confidence)
+    return element_type, confidence, alternatives, text, ocr_confidence
+
+
+def _ocr_labels(strokes: list[Stroke], enclosed_ids: set[str], ocr: OCRCallable) -> list[UIElement]:
+    """Read text drawn outside any enclosing control as labels."""
+    labels: list[UIElement] = []
+    for group in _cluster_text_strokes(strokes, enclosed_ids):
+        image = _render_strokes(group)
+        read = _run_ocr(ocr, image) if image is not None else None
+        if not read or not read[0]:
+            continue
+        text, ocr_confidence = read
+        points = [p for s in group for p in s.points]
+        xs, ys = [p[0] for p in points], [p[1] for p in points]
+        labels.append(UIElement(
+            "label", min(xs), min(ys), max(24, max(xs)-min(xs)), max(18, max(ys)-min(ys)),
+            text=text, confidence=_limit_confidence_with_ocr(0.84, ocr_confidence), alternatives=[], confirmed=False,
+            source_stroke_ids=[s.stroke_id for s in group],
+            ocr_confidence=ocr_confidence,
+        ))
+    return labels
+
+
+def _loose_shapes(shape_strokes: list, used_strokes: set[str]) -> list[UIElement]:
+    """Keep standalone lines and ovals so the user can still see and correct simple marks."""
+    elements: list[UIElement] = []
+    for stroke, shape, confidence, bounds in shape_strokes:
+        if stroke.stroke_id in used_strokes:
+            continue
+        x1, y1, x2, y2 = bounds
+        if shape == "line":
+            elements.append(UIElement("line", x1, y1, max(8, x2-x1), max(8, y2-y1), confidence=confidence,
+                                       alternatives=["panel"], source_stroke_ids=[stroke.stroke_id]))
+        elif shape == "ellipse":
+            # A closed oval is geometry, not automatically a radio control. Keeping
+            # it as a transparent outline lets face details and other ink remain visible.
+            elements.append(UIElement("ellipse", x1, y1, max(18, x2-x1), max(18, y2-y1), confidence=0.78,
+                                       alternatives=["panel", "radio_button"], source_stroke_ids=[stroke.stroke_id]))
+    return elements
 
 
 def recognize_sketch(document: DesignDocument, ocr: OCRCallable | None = None) -> list[UIElement]:
@@ -498,55 +561,14 @@ def recognize_sketch(document: DesignDocument, ocr: OCRCallable | None = None) -
                      and not any(_contains(inner, stroke_bounds(s), margin=0) for inner in nested_bounds)]
         rules = [s for s in contained if _horizontal_rule(s, bounds)]
         vertical_rules = [s for s in contained if _vertical_rule(s, bounds)]
-        text = ""
-        ocr_confidence = None
-        element_type = "panel"
-        confidence = 0.53
-        alternatives: list[str] = ["button", "text_field", "table"]
-        ratio = width / max(height, 1)
-
-        if nested:
-            element_type, confidence, alternatives = "panel", 0.86, ["panel", "button"]
-        elif len(rules) >= 2 or len(vertical_rules) >= 2 or (rules and vertical_rules):
-            element_type, confidence, alternatives = "table", 0.82, ["panel", "search_field"]
-        elif contained:
-            result = None
-            if ocr:
-                crop = _interior_image(contained, bounds)
-                if crop is not None:
-                    try:
-                        result = ocr(crop)
-                    except Exception:
-                        result = None
-            if result is not None:
-                text = str(getattr(result, "text", "") or "").strip()
-                ocr_confidence = _normalize_ocr_confidence(getattr(result, "confidence", None))
-                normal = " ".join(text.lower().replace("_", " ").split())
-                if any(term in normal for term in ("search", "find", "filter")) and ratio > 2.0:
-                    element_type, confidence, alternatives = "search_field", 0.90, ["text_field", "button"]
-                elif any(term in normal for term in ("email", "password", "username", "enter text")) and ratio > 2.0:
-                    element_type, confidence, alternatives = "text_field", 0.86, ["search_field", "button"]
-                elif text:
-                    element_type, confidence, alternatives = "button", 0.78, ["label", "text_field"]
-                else:
-                    element_type, confidence, alternatives = "button", 0.58, ["text_field", "search_field"]
-            elif ratio >= 3.4:
-                element_type, confidence, alternatives = "text_field", 0.59, ["search_field", "button"]
-            else:
-                element_type, confidence, alternatives = "button", 0.58, ["text_field", "panel"]
-        elif ratio > 3.8 and height <= 60:
-            element_type, confidence, alternatives = "text_field", 0.56, ["search_field", "button"]
-        else:
-            # Empty rectangles are commonly panels, but may be unfinished controls.
-            element_type, confidence, alternatives = "panel", 0.60, ["button", "text_field"]
-
-        if text:
-            confidence = _limit_confidence_with_ocr(confidence, ocr_confidence)
+        element_type, confidence, alternatives, text, ocr_confidence = _classify_rectangle(
+            bounds, bool(nested), contained, rules, vertical_rules, ocr,
+        )
 
         children_ids = [s.stroke_id for s in contained]
         used_strokes.add(shape_stroke.stroke_id)
         used_strokes.update(children_ids)
-        placeholder = (text or "Search...") if element_type == "search_field" else ((text or "Enter text...") if element_type == "text_field" else "")
+        placeholder = (text or DEFAULT_PLACEHOLDER[element_type]) if element_type in DEFAULT_PLACEHOLDER else ""
         elements.append(UIElement(
             element_type, x1, y1, width, height, text=text, placeholder=placeholder,
             confidence=min(confidence, shape_conf + 0.12), alternatives=alternatives,
@@ -556,47 +578,11 @@ def recognize_sketch(document: DesignDocument, ocr: OCRCallable | None = None) -
             table_columns=len(vertical_rules) + 1 if element_type == "table" else 3,
         ))
 
-    # OCR may also find labels drawn outside any enclosing control.
     if ocr:
-        enclosed_ids = set(used_strokes) | rectangle_ids
-        text_groups = _cluster_text_strokes(strokes, enclosed_ids)
-        recognized_text_ids: set[str] = set()
-        for group in text_groups:
-            image = _render_strokes(group)
-            if image is None:
-                continue
-            try:
-                result = ocr(image)
-            except Exception:
-                continue
-            text = str(getattr(result, "text", "") or "").strip()
-            if not text:
-                continue
-            points = [p for s in group for p in s.points]
-            xs, ys = [p[0] for p in points], [p[1] for p in points]
-            ocr_confidence = _normalize_ocr_confidence(getattr(result, "confidence", None))
-            elements.append(UIElement(
-                "label", min(xs), min(ys), max(24, max(xs)-min(xs)), max(18, max(ys)-min(ys)),
-                text=text, confidence=_limit_confidence_with_ocr(0.84, ocr_confidence), alternatives=[], confirmed=False,
-                source_stroke_ids=[s.stroke_id for s in group],
-                ocr_confidence=ocr_confidence,
-            ))
-            recognized_text_ids.update(s.stroke_id for s in group)
-        used_strokes.update(recognized_text_ids)
+        labels = _ocr_labels(strokes, used_strokes | rectangle_ids, ocr)
+        elements.extend(labels)
+        used_strokes.update(stroke_id for label in labels for stroke_id in label.source_stroke_ids)
 
-    # Keep standalone lines/circles so the user can still see and correct simple marks.
-    for stroke, shape, confidence, bounds in shape_strokes:
-        if stroke.stroke_id in used_strokes:
-            continue
-        x1, y1, x2, y2 = bounds
-        if shape == "line":
-            elements.append(UIElement("line", x1, y1, max(8, x2-x1), max(8, y2-y1), confidence=confidence,
-                                       alternatives=["panel"], source_stroke_ids=[stroke.stroke_id]))
-        elif shape == "ellipse":
-            # A closed oval is geometry, not automatically a radio control. Keeping
-            # it as a transparent outline lets face details and other ink remain visible.
-            elements.append(UIElement("ellipse", x1, y1, max(18, x2-x1), max(18, y2-y1), confidence=0.78,
-                                       alternatives=["panel", "radio_button"], source_stroke_ids=[stroke.stroke_id]))
-
+    elements.extend(_loose_shapes(shape_strokes, used_strokes))
     # Unrecognized ink remains as editable artwork; do not invent a fake panel.
     return elements

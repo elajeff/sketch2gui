@@ -13,6 +13,7 @@ SUPPORTED_ELEMENT_TYPES = {
 }
 
 DEFAULT_DROPDOWN_OPTIONS = ("Choose...", "Option 1", "Option 2")
+DEFAULT_PLACEHOLDER = {"search_field": "Search...", "text_field": "Enter text..."}
 
 MAX_PROJECT_STROKES = 2_000
 MAX_PROJECT_ELEMENTS = 2_000
@@ -25,6 +26,10 @@ MAX_CELL_CHARS = 500
 
 def new_id(prefix: str = "element") -> str:
     return f"{prefix}_{uuid4().hex[:8]}"
+
+
+def clamp(value: float, low: float, high: float) -> float:
+    return min(max(low, value), high)
 
 
 @dataclass
@@ -109,7 +114,7 @@ class UIElement:
             raise ValueError("Component geometry and confidence must be finite numbers")
         self.width = max(8.0, self.width)
         self.height = max(8.0, self.height)
-        self.confidence = max(0.0, min(1.0, confidence))
+        self.confidence = clamp(confidence, 0.0, 1.0)
         if self.ocr_confidence is not None:
             try:
                 ocr_confidence = float(self.ocr_confidence)
@@ -117,7 +122,7 @@ class UIElement:
                 raise ValueError("OCR confidence must be a finite number or None") from exc
             if not math.isfinite(ocr_confidence):
                 raise ValueError("OCR confidence must be a finite number or None")
-            self.ocr_confidence = max(0.0, min(1.0, ocr_confidence))
+            self.ocr_confidence = clamp(ocr_confidence, 0.0, 1.0)
         if not isinstance(self.chart_values, list) or len(self.chart_values) > MAX_CHART_VALUES:
             raise ValueError(f"Chart values must be a list containing at most {MAX_CHART_VALUES} numbers")
         clean_values = []
@@ -172,10 +177,8 @@ class UIElement:
         elif previous_type == "table" and element_type != "table":
             self.table_cells = []
         self.element_type = element_type
-        if not self.placeholder and element_type == "search_field":
-            self.placeholder = self.text or "Search..."
-        elif not self.placeholder and element_type == "text_field":
-            self.placeholder = self.text or "Enter text..."
+        if not self.placeholder and element_type in DEFAULT_PLACEHOLDER:
+            self.placeholder = self.text or DEFAULT_PLACEHOLDER[element_type]
         if user_confirmed:
             self.mark_user_modified()
 
@@ -224,6 +227,18 @@ class UIElement:
         )
 
 
+def overlap_ratio(a: UIElement, b: UIElement) -> float:
+    """Share of the smaller element's area that the two elements have in common."""
+    smaller_area = min(a.width * a.height, b.width * b.height)
+    if smaller_area <= 0:
+        return 0.0
+    intersection = (
+        max(0.0, min(a.x + a.width, b.x + b.width) - max(a.x, b.x))
+        * max(0.0, min(a.y + a.height, b.y + b.height) - max(a.y, b.y))
+    )
+    return intersection / smaller_area
+
+
 def preserve_manual_edits(previous: list[UIElement], detected: list[UIElement]) -> list[UIElement]:
     """Retain manual edits while replacing only the recognition results."""
     saved = {
@@ -237,18 +252,12 @@ def preserve_manual_edits(previous: list[UIElement], detected: list[UIElement]) 
     ]
 
     def overlaps_manual(candidate: UIElement, manual: UIElement) -> bool:
-        intersection = (
-            max(0.0, min(manual.x + manual.width, candidate.x + candidate.width)
-                - max(manual.x, candidate.x))
-            * max(0.0, min(manual.y + manual.height, candidate.y + candidate.height)
-                  - max(manual.y, candidate.y))
-        )
         smaller_area = min(manual.width * manual.height, candidate.width * candidate.height)
         larger_area = max(manual.width * manual.height, candidate.width * candidate.height)
         return (
-            smaller_area > 0 and larger_area > 0
+            larger_area > 0
             and smaller_area / larger_area >= 0.50
-            and intersection / smaller_area >= 0.72
+            and overlap_ratio(candidate, manual) >= 0.72
         )
 
     # Suppress only fresh detections; never filter preserved user elements.
@@ -292,6 +301,9 @@ class DesignDocument:
     elements: list[UIElement] = field(default_factory=list)
     name: str = "Untitled sketch"
 
+    def element(self, element_id: str | None) -> UIElement | None:
+        return next((element for element in self.elements if element.element_id == element_id), None)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "format": "sketch2gui", "version": 1, "name": self.name,
@@ -299,6 +311,10 @@ class DesignDocument:
             "strokes": [s.to_dict() for s in self.strokes],
             "elements": [e.to_dict() for e in self.elements],
         }
+
+    def ordered_elements(self) -> list[UIElement]:
+        """Panels first, then top to bottom and left to right, so panels stay behind their contents."""
+        return sorted(self.elements, key=lambda element: (element.element_type != "panel", element.y, element.x))
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "DesignDocument":
@@ -350,8 +366,8 @@ class DesignDocument:
         for element in elements:
             element.width = min(element.width, float(width))
             element.height = min(element.height, float(height))
-            element.x = min(max(0.0, element.x), float(width) - element.width)
-            element.y = min(max(0.0, element.y), float(height) - element.height)
+            element.x = clamp(element.x, 0.0, float(width) - element.width)
+            element.y = clamp(element.y, 0.0, float(height) - element.height)
 
         if len({stroke.stroke_id for stroke in strokes}) != len(strokes):
             raise ValueError("Project contains duplicate stroke IDs")
