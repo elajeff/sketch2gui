@@ -837,7 +837,8 @@ class MainWindow(QMainWindow):
             return
         if not self._confirm_save_changes("opening another project"):
             return
-        self._snapshot()
+        self._undo_stack.clear()
+        self._redo_stack.clear()
         self.document = new_document
         self._saved_state = self._serialize()
         self._current_file = Path(path)

@@ -208,6 +208,7 @@ class MainWindowEditingTests(unittest.TestCase):
         self.assertEqual(len(self.window.document.elements), 1)
         self.assertEqual(self.window.document.elements[0].text, "Replacement")
         self.assertFalse(self.window._has_unsaved_changes())
+        self.assertFalse(self.window.undo_button.isEnabled())
 
     def test_close_can_be_cancelled_when_changes_are_unsaved(self):
         event = QCloseEvent()
