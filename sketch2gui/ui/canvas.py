@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import Qt, Signal, QPointF
+from PySide6.QtCore import Qt, Signal, QPointF, QRectF
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QFont
 from PySide6.QtWidgets import QWidget
 
-from ..models import DesignDocument, Stroke, UIElement
+from ..models import DEFAULT_DROPDOWN_OPTIONS, DEFAULT_PLACEHOLDER, DesignDocument, Stroke, UIElement
+from .preview import paint_chart
 
 
 DRAWING_FOOTER_HEIGHT = 28
@@ -324,7 +325,7 @@ class DrawingCanvas(QWidget):
             if width >= min_width and height >= min_height:
                 defaults = {
                     "button": {"text": "Button"},
-                    "text_field": {"placeholder": "Enter text..."},
+                    "text_field": {"placeholder": DEFAULT_PLACEHOLDER["text_field"]},
                     "label": {"text": "Label"},
                 }
                 element = UIElement(
@@ -403,26 +404,7 @@ class DrawingCanvas(QWidget):
                 painter.drawEllipse(int(x), int(y), int(w), int(h))
             elif element.element_type == "chart":
                 painter.drawRect(int(x), int(y), int(w), int(h))
-                for level in range(1, 4):
-                    yy = y + h * level / 4
-                    painter.drawLine(int(x + 8), int(yy), int(x + w - 8), int(yy))
-                if len(element.chart_values) < 2:
-                    painter.setPen(QColor("#64748B"))
-                    painter.drawText(int(x + 4), int(y + 4), max(1, int(w - 8)), max(1, int(h - 8)), Qt.AlignmentFlag.AlignCenter, "Add values in Properties")
-                else:
-                    magnitude = max(abs(value) for value in element.chart_values) or 1.0
-                    values = [value / magnitude for value in element.chart_values]
-                    low, high = min(values), max(values)
-                    span = high - low or 1.0
-                    pts = [(x + w * 0.10 + (w * 0.80) * index / (len(values) - 1),
-                            y + h * 0.90 - ((value - low) / span) * (h * 0.75))
-                           for index, value in enumerate(values)]
-                    painter.setPen(QPen(QColor("#2563EB"), 2.2))
-                    for first, second in zip(pts, pts[1:]):
-                        painter.drawLine(int(first[0]), int(first[1]), int(second[0]), int(second[1]))
-                    painter.setBrush(QColor("#2563EB"))
-                    for px, py in pts:
-                        painter.drawEllipse(int(px)-2, int(py)-2, 4, 4)
+                paint_chart(painter, QRectF(x, y, w, h), element.chart_values)
             elif element.element_type == "table":
                 painter.drawRect(int(x), int(y), int(w), int(h))
                 for col in range(1, element.table_columns):
@@ -434,7 +416,7 @@ class DrawingCanvas(QWidget):
                 painter.drawText(int(x), int(y), int(w), int(h), Qt.AlignmentFlag.AlignCenter, element.text or "Button")
             elif element.element_type in ("text_field", "search_field", "dropdown"):
                 painter.drawRoundedRect(int(x), int(y), int(w), int(h), 4, 4)
-                painter.drawText(int(x+8), int(y), max(0, int(w-16)), int(h), Qt.AlignmentFlag.AlignVCenter, element.placeholder or "Enter text...")
+                painter.drawText(int(x+8), int(y), max(0, int(w-16)), int(h), Qt.AlignmentFlag.AlignVCenter, element.placeholder or DEFAULT_PLACEHOLDER.get(element.element_type, DEFAULT_DROPDOWN_OPTIONS[0]))
                 if element.element_type == "dropdown":
                     painter.drawText(int(x+w-22), int(y), 18, int(h), Qt.AlignmentFlag.AlignVCenter, "▾")
             elif element.element_type in ("checkbox", "radio_button"):

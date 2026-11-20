@@ -13,6 +13,7 @@ SUPPORTED_ELEMENT_TYPES = {
 }
 
 DEFAULT_DROPDOWN_OPTIONS = ("Choose...", "Option 1", "Option 2")
+DEFAULT_PLACEHOLDER = {"search_field": "Search...", "text_field": "Enter text..."}
 
 MAX_PROJECT_STROKES = 2_000
 MAX_PROJECT_ELEMENTS = 2_000
@@ -169,10 +170,8 @@ class UIElement:
         elif previous_type == "table" and element_type != "table":
             self.table_cells = []
         self.element_type = element_type
-        if not self.placeholder and element_type == "search_field":
-            self.placeholder = self.text or "Search..."
-        elif not self.placeholder and element_type == "text_field":
-            self.placeholder = self.text or "Enter text..."
+        if not self.placeholder and element_type in DEFAULT_PLACEHOLDER:
+            self.placeholder = self.text or DEFAULT_PLACEHOLDER[element_type]
         if user_confirmed:
             self.mark_user_modified()
 
@@ -316,6 +315,10 @@ class DesignDocument:
             "strokes": [s.to_dict() for s in self.strokes],
             "elements": [e.to_dict() for e in self.elements],
         }
+
+    def ordered_elements(self) -> list[UIElement]:
+        """Panels first, then top to bottom and left to right, so panels stay behind their contents."""
+        return sorted(self.elements, key=lambda element: (element.element_type != "panel", element.y, element.x))
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "DesignDocument":
