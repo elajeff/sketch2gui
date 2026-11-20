@@ -330,15 +330,25 @@ class MainWindowEditingTests(unittest.TestCase):
         self.window.show()
         self.app.processEvents()
 
+        scale, ox, oy = self.window.canvas._canvas_transform()
         # Deliberately send press/release only, without a mouse-move event.
-        QTest.mousePress(self.window.canvas, Qt.MouseButton.LeftButton, pos=QPoint(45, 45))
-        QTest.mouseRelease(self.window.canvas, Qt.MouseButton.LeftButton, pos=QPoint(170, 130))
+        QTest.mousePress(self.window.canvas, Qt.MouseButton.LeftButton, pos=QPoint(round(45 * scale + ox), round(45 * scale + oy)))
+        QTest.mouseRelease(self.window.canvas, Qt.MouseButton.LeftButton, pos=QPoint(round(170 * scale + ox), round(130 * scale + oy)))
         self.app.processEvents()
 
         self.assertEqual(len(self.window.document.strokes), 1)
         generated = self.window.code_editor.toPlainText()
         self.assertNotEqual(generated, code_before)
         self.assertIn("self._sketch_strokes = [", generated)
+
+    def test_canvas_keeps_the_design_proportions(self):
+        self.window.resize(1280, 800)
+        self.window.show()
+        self.app.processEvents()
+        canvas = self.window.canvas
+        left, top = canvas._widget_to_document(QPoint(100, 200))
+        right, bottom = canvas._widget_to_document(QPoint(200, 300))
+        self.assertAlmostEqual(right - left, bottom - top)
 
     def test_adding_a_stroke_preserves_existing_preview_controls(self):
         button = UIElement("button", 30, 40, 140, 42, text="Keep me")
@@ -412,9 +422,9 @@ class MainWindowEditingTests(unittest.TestCase):
         index = self.window.drawing_tool_combo.findData("button")
         self.window.drawing_tool_combo.setCurrentIndex(index)
         canvas = self.window.canvas
-        scale_x, scale_y, offset_x, offset_y = canvas._canvas_transform()
-        start = QPoint(round(offset_x + 40 * scale_x), round(offset_y + 50 * scale_y))
-        end = QPoint(round(offset_x + 180 * scale_x), round(offset_y + 95 * scale_y))
+        scale, offset_x, offset_y = canvas._canvas_transform()
+        start = QPoint(round(offset_x + 40 * scale), round(offset_y + 50 * scale))
+        end = QPoint(round(offset_x + 180 * scale), round(offset_y + 95 * scale))
         QTest.mousePress(canvas, Qt.MouseButton.LeftButton, pos=start)
         QTest.mouseMove(canvas, QPoint(start.x() + 35, start.y() + 12), 1)
         QTest.mouseMove(canvas, end, 1)
@@ -437,9 +447,9 @@ class MainWindowEditingTests(unittest.TestCase):
             self.window.drawing_tool_combo.findData("button")
         )
         canvas = self.window.canvas
-        scale_x, scale_y, offset_x, offset_y = canvas._canvas_transform()
-        start = QPoint(round(offset_x + 40 * scale_x), round(offset_y + 50 * scale_y))
-        end = QPoint(round(offset_x + 180 * scale_x), round(offset_y + 95 * scale_y))
+        scale, offset_x, offset_y = canvas._canvas_transform()
+        start = QPoint(round(offset_x + 40 * scale), round(offset_y + 50 * scale))
+        end = QPoint(round(offset_x + 180 * scale), round(offset_y + 95 * scale))
         QTest.mousePress(canvas, Qt.MouseButton.LeftButton, pos=start)
         QTest.mouseRelease(canvas, Qt.MouseButton.LeftButton, pos=end)
         self.app.processEvents()
@@ -459,9 +469,9 @@ class MainWindowEditingTests(unittest.TestCase):
             self.window.drawing_tool_combo.findData("select")
         )
         canvas = self.window.canvas
-        sx, sy, ox, oy = canvas._canvas_transform()
-        start = QPoint(round(80 * sx + ox), round(70 * sy + oy))
-        end = QPoint(round(130 * sx + ox), round(100 * sy + oy))
+        scale, ox, oy = canvas._canvas_transform()
+        start = QPoint(round(80 * scale + ox), round(70 * scale + oy))
+        end = QPoint(round(130 * scale + ox), round(100 * scale + oy))
         old_x, old_y = self.element.x, self.element.y
         QTest.mousePress(canvas, Qt.MouseButton.LeftButton, pos=start)
         QTest.mouseRelease(canvas, Qt.MouseButton.LeftButton, pos=end)
@@ -478,10 +488,10 @@ class MainWindowEditingTests(unittest.TestCase):
             self.window.drawing_tool_combo.findData("select")
         )
         canvas = self.window.canvas
-        sx, sy, ox, oy = canvas._canvas_transform()
-        start = QPoint(round((self.element.x + self.element.width) * sx + ox),
-                       round((self.element.y + self.element.height) * sy + oy))
-        end = QPoint(round(240 * sx + ox), round(150 * sy + oy))
+        scale, ox, oy = canvas._canvas_transform()
+        start = QPoint(round((self.element.x + self.element.width) * scale + ox),
+                       round((self.element.y + self.element.height) * scale + oy))
+        end = QPoint(round(240 * scale + ox), round(150 * scale + oy))
         old_width, old_height = self.element.width, self.element.height
         QTest.mousePress(canvas, Qt.MouseButton.LeftButton, pos=start)
         QTest.mouseRelease(canvas, Qt.MouseButton.LeftButton, pos=end)
@@ -500,8 +510,8 @@ class MainWindowEditingTests(unittest.TestCase):
             self.window.drawing_tool_combo.findData("line")
         )
         canvas = self.window.canvas
-        sx, sy, ox, oy = canvas._canvas_transform()
-        to_canvas = lambda x, y: QPoint(round(x * sx + ox), round(y * sy + oy))
+        scale, ox, oy = canvas._canvas_transform()
+        to_canvas = lambda x, y: QPoint(round(x * scale + ox), round(y * scale + oy))
 
         for start_point, end_point in (((40, 50), (160, 50)), ((220, 60), (220, 180))):
             QTest.mousePress(canvas, Qt.MouseButton.LeftButton, pos=to_canvas(*start_point))
@@ -575,8 +585,8 @@ class MainWindowEditingTests(unittest.TestCase):
         self.window.drawing_tool_combo.setCurrentIndex(self.window.drawing_tool_combo.findData("select"))
         self.app.processEvents()
         canvas = self.window.canvas
-        sx, sy, ox, oy = canvas._canvas_transform()
-        point = lambda x, y: QPoint(round(ox + x * sx), round(oy + y * sy))
+        scale, ox, oy = canvas._canvas_transform()
+        point = lambda x, y: QPoint(round(ox + x * scale), round(oy + y * scale))
         start = point(80, 60)
         end = point(115, 83)
         QTest.mousePress(canvas, Qt.MouseButton.LeftButton, pos=start)
@@ -716,14 +726,14 @@ class MainWindowEditingTests(unittest.TestCase):
         self.window.show()
         self.app.processEvents()
         canvas = self.window.canvas
-        scale_x, scale_y, offset_x, offset_y = canvas._canvas_transform()
+        scale, offset_x, offset_y = canvas._canvas_transform()
         design_points = [
             (40, 40), (90, 40), (140, 40), (180, 40),
             (180, 60), (180, 90), (180, 110),
             (140, 110), (90, 110), (40, 110),
             (40, 90), (40, 60), (40, 40),
         ]
-        canvas_points = [QPoint(round(offset_x + x * scale_x), round(offset_y + y * scale_y))
+        canvas_points = [QPoint(round(offset_x + x * scale), round(offset_y + y * scale))
                          for x, y in design_points]
         QTest.mousePress(canvas, Qt.MouseButton.LeftButton, pos=canvas_points[0])
         for point in canvas_points[1:-1]:
@@ -753,8 +763,8 @@ class MainWindowEditingTests(unittest.TestCase):
         self.window.show()
         self.app.processEvents()
         canvas = self.window.canvas
-        scale_x, scale_y, offset_x, offset_y = canvas._canvas_transform()
-        to_canvas = lambda x, y: QPoint(round(offset_x + x * scale_x), round(offset_y + y * scale_y))
+        scale, offset_x, offset_y = canvas._canvas_transform()
+        to_canvas = lambda x, y: QPoint(round(offset_x + x * scale), round(offset_y + y * scale))
 
         QTest.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=to_canvas(80, 75))
         self.assertEqual(self.window.selected_id, self.element.element_id)
