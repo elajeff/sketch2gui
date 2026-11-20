@@ -178,6 +178,25 @@ class MainWindowEditingTests(unittest.TestCase):
             compile(exported, str(python_path), "exec")
             self.assertIn("Open project", exported)
 
+    def test_save_writes_to_the_current_file_and_title_marks_unsaved_changes(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as folder:
+            project_path = Path(folder) / "titled.json"
+            with patch("sketch2gui.ui.main_window.QFileDialog.getSaveFileName",
+                       return_value=(str(project_path), "")):
+                self.window.save_project()
+            self.assertIn("titled.json", self.window.windowTitle())
+            self.assertFalse(self.window.isWindowModified())
+
+            self.window.add_stroke(Stroke([(10, 15), (25, 30)], stroke_id="later-stroke"))
+            self.assertTrue(self.window.isWindowModified())
+
+            with patch("sketch2gui.ui.main_window.QFileDialog.getSaveFileName") as dialog:
+                self.window.save_project()
+            dialog.assert_not_called()
+            saved = json.loads(project_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["strokes"][0]["id"], "later-stroke")
+            self.assertFalse(self.window.isWindowModified())
+
     def test_open_project_cancel_preserves_unsaved_changes(self):
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as folder:
             project_path = Path(folder) / "replacement.json"
