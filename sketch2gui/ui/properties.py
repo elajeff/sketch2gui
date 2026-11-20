@@ -5,7 +5,7 @@ import math
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QFormLayout, QLabel, QComboBox, QLineEdit, QSpinBox, QGroupBox
 
-from ..models import SUPPORTED_ELEMENT_TYPES, UIElement
+from ..models import MAX_CHART_VALUES, MAX_TABLE_SIZE, SUPPORTED_ELEMENT_TYPES, UIElement
 
 TYPE_LABELS = {
     "button": "Button", "text_field": "Text field", "search_field": "Search field",
@@ -49,16 +49,16 @@ class PropertiesPanel(QWidget):
         chart_form = QFormLayout(chart_box)
         self.chart_values_edit = QLineEdit()
         self.chart_values_edit.setPlaceholderText("e.g. 4, 7, 3, 8")
-        self.chart_values_edit.setToolTip("Enter up to 100 comma-separated numeric values. At least two values draw a line.")
+        self.chart_values_edit.setToolTip(f"Enter up to {MAX_CHART_VALUES} comma-separated numeric values. At least two values draw a line.")
         chart_form.addRow("Values", self.chart_values_edit)
         outer.addWidget(chart_box)
 
         table_box = QGroupBox("Table")
         table_form = QFormLayout(table_box)
         self.table_rows_spin = QSpinBox()
-        self.table_rows_spin.setRange(1, 20)
+        self.table_rows_spin.setRange(1, MAX_TABLE_SIZE)
         self.table_columns_spin = QSpinBox()
-        self.table_columns_spin.setRange(1, 20)
+        self.table_columns_spin.setRange(1, MAX_TABLE_SIZE)
         table_form.addRow("Rows", self.table_rows_spin)
         table_form.addRow("Columns", self.table_columns_spin)
         outer.addWidget(table_box)
@@ -107,17 +107,17 @@ class PropertiesPanel(QWidget):
                 values = []
             else:
                 parts = [part.strip() for part in raw.split(",")]
-                if len(parts) > 100 or any(not part for part in parts):
+                if len(parts) > MAX_CHART_VALUES or any(not part for part in parts):
                     raise ValueError
                 values = [float(part) for part in parts]
                 if any(not math.isfinite(value) for value in values):
                     raise ValueError
         except ValueError:
             self.chart_values_edit.setStyleSheet("QLineEdit { border: 1px solid #D92D20; }")
-            self.chart_values_edit.setToolTip("Enter up to 100 comma-separated finite numbers, e.g. 4, 7, 3, 8.")
+            self.chart_values_edit.setToolTip(f"Enter up to {MAX_CHART_VALUES} comma-separated finite numbers, e.g. 4, 7, 3, 8.")
             return
         self.chart_values_edit.setStyleSheet("")
-        self.chart_values_edit.setToolTip("Enter up to 100 comma-separated numeric values. At least two values draw a line.")
+        self.chart_values_edit.setToolTip(f"Enter up to {MAX_CHART_VALUES} comma-separated numeric values. At least two values draw a line.")
         self.change_requested.emit("chart_values", values)
 
     def _send(self, field: str, value: object) -> None:

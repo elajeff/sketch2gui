@@ -23,7 +23,7 @@ from ..geometry import recognize_sketch
 from ..models import (
     DesignDocument, UIElement, Stroke, preserve_manual_edits, new_id, clamp,
     SUPPORTED_ELEMENT_TYPES, MAX_PROJECT_STROKES, MAX_PROJECT_ELEMENTS,
-    MAX_STROKE_POINTS, MAX_PROJECT_POINTS,
+    MAX_STROKE_POINTS, MAX_PROJECT_POINTS, MAX_CELL_CHARS,
 )
 from ..ocr import load_backend
 from ..sample_images import render_strokes
@@ -35,28 +35,6 @@ from .properties import PropertiesPanel
 MAX_PROJECT_FILE_BYTES = 16 * 1024 * 1024
 
 
-def _check_project_json_depth(text: str) -> None:
-    """Reject excessive JSON nesting before the JSON parser processes it."""
-    depth = 0
-    in_string = False
-    escaped = False
-    for character in text:
-        if in_string:
-            if escaped:
-                escaped = False
-            elif character == "\\":
-                escaped = True
-            elif character == '"':
-                in_string = False
-        elif character == '"':
-            in_string = True
-        elif character in "[{":
-            depth += 1
-            if depth > 100:
-                raise ValueError("Project JSON is nested too deeply (maximum 100 levels).")
-        elif character in "]}":
-            depth = max(0, depth - 1)
-
 def _read_project_file(path: Path) -> dict:
     """Read a project with a size limit before parsing its JSON contents."""
     try:
@@ -66,9 +44,7 @@ def _read_project_file(path: Path) -> dict:
             raise ValueError(
                 f"Project file exceeds the {MAX_PROJECT_FILE_BYTES // (1024 * 1024)} MiB size limit"
             )
-        text = raw.decode("utf-8")
-        _check_project_json_depth(text)
-        return json.loads(text)
+        return json.loads(raw.decode("utf-8"))
     except RecursionError as exc:
         raise ValueError("Project JSON is nested too deeply to open safely") from exc
     except UnicodeDecodeError as exc:
@@ -537,7 +513,7 @@ class MainWindow(QMainWindow):
             return
         if not (0 <= row < element.table_rows and 0 <= column < element.table_columns):
             return
-        value = str(value)[:500]
+        value = str(value)[:MAX_CELL_CHARS]
         if element.table_cells[row][column] == value:
             return
         self._snapshot()
@@ -677,13 +653,6 @@ class MainWindow(QMainWindow):
         if element is None:
             return
 
-        supported_fields = {
-            "element_type", "x", "y", "width", "height", "text", "placeholder",
-            "chart_values", "table_rows", "table_columns",
-        }
-        if field not in supported_fields:
-            return
-
         normalized_value = value
         new_bounds = None
         new_table = None
@@ -721,14 +690,10 @@ class MainWindow(QMainWindow):
                 if element.element_type != "chart":
                     return
                 normalized_value = [float(item) for item in value]
-                if len(normalized_value) > 100 or any(not math.isfinite(item) for item in normalized_value):
-                    return
             elif field in ("table_rows", "table_columns"):
                 if element.element_type != "table":
                     return
                 size = int(value)
-                if not 1 <= size <= 20:
-                    return
                 rows = size if field == "table_rows" else element.table_rows
                 columns = size if field == "table_columns" else element.table_columns
                 old_cells = element.table_cells

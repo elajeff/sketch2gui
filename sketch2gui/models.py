@@ -19,6 +19,9 @@ MAX_PROJECT_STROKES = 2_000
 MAX_PROJECT_ELEMENTS = 2_000
 MAX_STROKE_POINTS = 25_000
 MAX_PROJECT_POINTS = 250_000
+MAX_CHART_VALUES = 100
+MAX_TABLE_SIZE = 20
+MAX_CELL_CHARS = 500
 
 
 def new_id(prefix: str = "element") -> str:
@@ -120,8 +123,8 @@ class UIElement:
             if not math.isfinite(ocr_confidence):
                 raise ValueError("OCR confidence must be a finite number or None")
             self.ocr_confidence = clamp(ocr_confidence, 0.0, 1.0)
-        if not isinstance(self.chart_values, list) or len(self.chart_values) > 100:
-            raise ValueError("Chart values must be a list containing at most 100 numbers")
+        if not isinstance(self.chart_values, list) or len(self.chart_values) > MAX_CHART_VALUES:
+            raise ValueError(f"Chart values must be a list containing at most {MAX_CHART_VALUES} numbers")
         clean_values = []
         for value in self.chart_values:
             try:
@@ -133,10 +136,10 @@ class UIElement:
             clean_values.append(number)
         self.chart_values = clean_values
         try:
-            self.table_rows = max(1, min(20, int(self.table_rows)))
-            self.table_columns = max(1, min(20, int(self.table_columns)))
+            self.table_rows = max(1, min(MAX_TABLE_SIZE, int(self.table_rows)))
+            self.table_columns = max(1, min(MAX_TABLE_SIZE, int(self.table_columns)))
         except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("Table dimensions must be integers between 1 and 20") from exc
+            raise ValueError(f"Table dimensions must be integers between 1 and {MAX_TABLE_SIZE}") from exc
         if self.element_type != "table":
             self.table_cells = []
         else:
@@ -147,7 +150,7 @@ class UIElement:
                 row = self.table_cells[row_index] if row_index < len(self.table_cells) else []
                 if not isinstance(row, list):
                     raise ValueError("Each table row must be a list")
-                normalized_cells.append([str(row[col])[:500] if col < len(row) else ""
+                normalized_cells.append([str(row[col])[:MAX_CELL_CHARS] if col < len(row) else ""
                                          for col in range(self.table_columns)])
             self.table_cells = normalized_cells
 
@@ -204,29 +207,10 @@ class UIElement:
             raise ValueError("Project element bounds must be a JSON object")
         alternatives = data.get("alternatives", [])
         source_stroke_ids = data.get("source_stroke_ids", [])
-        chart_values_data = data.get("chart_values", [])
-        table_cells_data = data.get("table_cells", [])
         if not isinstance(source_stroke_ids, list):
             raise ValueError("Project source stroke IDs must be a JSON array")
-        if not isinstance(table_cells_data, list) or any(not isinstance(row, list) for row in table_cells_data):
-            raise ValueError("Project table cells must be an array of row arrays")
-        try:
-            table_rows = int(data.get("table_rows", 3))
-            table_columns = int(data.get("table_columns", 3))
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("Project table dimensions must be integers between 1 and 20") from exc
-        if not 1 <= table_rows <= 20 or not 1 <= table_columns <= 20:
-            raise ValueError("Project table dimensions must be between 1 and 20")
-        if len(table_cells_data) > 20 or any(len(row) > 20 for row in table_cells_data):
-            raise ValueError("Project table cells cannot exceed 20 rows or columns")
-        if not isinstance(chart_values_data, list) or len(chart_values_data) > 100:
-            raise ValueError("Project chart values must be an array containing at most 100 numbers")
         if not isinstance(alternatives, list):
             raise ValueError("Project element alternatives must be a JSON array")
-        try:
-            chart_values = [float(value) for value in chart_values_data]
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("Project chart values must be finite numbers") from exc
         return cls(
             element_type=str(data.get("type", "panel")),
             x=float(bounds.get("x", 0)), y=float(bounds.get("y", 0)),
@@ -237,10 +221,9 @@ class UIElement:
             confirmed=bool(data.get("confirmed", False)), user_modified=bool(data.get("user_modified", False)),
             source_stroke_ids=[str(x) for x in source_stroke_ids],
             ocr_confidence=(None if data.get("ocr_confidence") is None else float(data["ocr_confidence"])),
-            chart_values=chart_values,
-            table_rows=table_rows, table_columns=table_columns,
-            table_cells=[[str(value)[:500] for value in row[:table_columns]]
-                          for row in table_cells_data[:table_rows]],
+            chart_values=data.get("chart_values", []),
+            table_rows=data.get("table_rows", 3), table_columns=data.get("table_columns", 3),
+            table_cells=data.get("table_cells", []),
         )
 
 
